@@ -1525,10 +1525,12 @@ run() {
 }
 
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
-case $1 in
-  --help|-h) usage; exit 0 ;;
-  --version) printf 'sitter %s\n' "$SITTER_VERSION"; exit 0 ;;
-esac
+if (($# == 1)); then
+  case $1 in
+    --help|-h) usage; exit 0 ;;
+    --version) printf 'sitter %s\n' "$SITTER_VERSION"; exit 0 ;;
+  esac
+fi
 VERB=$1; shift
 case $VERB in
   expect|ack|sweep|run|ask|watch|__reserve_ask_prepare) ;;

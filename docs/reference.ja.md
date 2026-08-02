@@ -39,6 +39,8 @@ sitter ask --already-sent --ledger <path> --to <name> --sla <秒> --reply-file <
 sitter watch --once --ledger <path> [--id <expect_id>] [--kill-file <path>]
 
 sitter sweep --once --ledger <path> --on-fail <cmd>
+
+sitter --help | -h | --version
 ```
 
 ストール判定は 15 秒間隔で評価されます。タイムアウトの残り時間がそれより

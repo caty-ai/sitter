@@ -18,7 +18,7 @@ normal() {
 }
 
 help_and_version_are_stdout_success() {
-  local flag name out err version_output version_pattern='^sitter [0-9][0-9.]*$'
+  local flag name out err version_output version_pattern='^sitter [0-9]+\.[0-9]+\.[0-9]+$'
   for flag in --help -h; do
     name=${flag#-}; name=${name#-}
     out="$CASE_DIR/$name.out"; err="$CASE_DIR/$name.err"
@@ -39,12 +39,18 @@ usage_error_paths_stay_stderr_exit_two() {
   local no_args_out="$CASE_DIR/no-args.out" no_args_err="$CASE_DIR/no-args.err"
   local bogus_out="$CASE_DIR/bogus.out" bogus_err="$CASE_DIR/bogus.err"
   local run_help_out="$CASE_DIR/run-help.out" run_help_err="$CASE_DIR/run-help.err"
+  local help_extra_out="$CASE_DIR/help-extra.out" help_extra_err="$CASE_DIR/help-extra.err"
+  local version_extra_out="$CASE_DIR/version-extra.out" version_extra_err="$CASE_DIR/version-extra.err"
   assert_exit 2 "$SITTER" >"$no_args_out" 2>"$no_args_err"
   assert_exit 2 "$SITTER" definitely-not-a-verb >"$bogus_out" 2>"$bogus_err"
   assert_exit 2 "$SITTER" run --help >"$run_help_out" 2>"$run_help_err"
+  assert_exit 2 "$SITTER" --help extra >"$help_extra_out" 2>"$help_extra_err"
+  assert_exit 2 "$SITTER" --version extra >"$version_extra_out" 2>"$version_extra_err"
   [[ ! -s $no_args_out && -s $no_args_err ]]
   [[ ! -s $bogus_out && -s $bogus_err ]]
   [[ ! -s $run_help_out && -s $run_help_err ]]
+  [[ ! -s $help_extra_out && -s $help_extra_err ]]
+  [[ ! -s $version_extra_out && -s $version_extra_err ]]
   cmp "$no_args_err" "$bogus_err"
 }
 
@@ -54,8 +60,9 @@ help_after_separator_reaches_wrapped_command() {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'received=$1' 'shift' \
     'printf "%s\n" "$@" >>"$received"' >"$receiver"
   chmod +x "$receiver"
-  run_case help-separator -- "$receiver" "$received" --help
+  run_case help-separator -- "$receiver" "$received" --help --version
   grep -Fxq -- '--help' "$received"
+  grep -Fxq -- '--version' "$received"
   assert_event_seq "$CASE_DIR/help-separator.jsonl" start end
   grep -q '"event":"end","status":"success"' "$CASE_DIR/help-separator.jsonl"
   assert_spy_count 0 "$CASE_DIR/help-separator.spy"

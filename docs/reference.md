@@ -41,6 +41,8 @@ sitter ask --already-sent --ledger <path> --to <name> --sla <sec> --reply-file <
 sitter watch --once --ledger <path> [--id <expect_id>] [--kill-file <path>]
 
 sitter sweep --once --ledger <path> --on-fail <cmd>
+
+sitter --help | -h | --version
 ```
 
 Stall detection is evaluated at 15-second granularity; timeout polling uses

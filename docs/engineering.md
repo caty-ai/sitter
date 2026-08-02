@@ -438,7 +438,7 @@ is no config file, by design.
 
 ## Status
 
-**v0.2.0 — audited release candidate.** The frozen v0 supervision and reply
+**v0.2.1 — audited release candidate.** The frozen v0 supervision and reply
 deadman contract now includes the `ask` / `watch` reply-file boundary. Its
 same-id admission is atomic: one concurrent `ask` may run the external
 sender, while every loser exits before doing so. The specification remains

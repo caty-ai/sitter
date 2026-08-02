@@ -7,6 +7,9 @@ welcome within the frozen design boundaries.
 
 - **Issue first.** Open an issue describing the why and the "done when"
   before sending a PR, and list the files you expect to touch.
+- **Releases pin the version constant.** Bump `SITTER_VERSION` in `sitter` in the
+  same commit as a release; CI runs on every pushed tag and fails unless the tag
+  equals `v$SITTER_VERSION`.
 - **The v0 requirements are frozen.** `docs/requirements-v0.md` records the
   rulings and their rationale. Bug fixes against the documented behavior are
   always fair game; behavior *changes* need a requirements discussion in an
