@@ -7,8 +7,12 @@
 # idempotent,detail_truncated,hook_exit_code
 set -euo pipefail
 
+# Release version of this file. CI's tag job requires the pushed git tag to
+# equal "v$SITTER_VERSION", so bump this in the same commit as a release.
+SITTER_VERSION='0.2.1'
+
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: sitter run --ledger PATH --on-fail CMD [options] -- command [args...]
        sitter expect --ledger PATH --on-fail CMD --id EXPECT_ID [options]
        sitter ack --ledger PATH --id EXPECT_ID [--detail TEXT]
@@ -16,6 +20,7 @@ usage: sitter run --ledger PATH --on-fail CMD [options] -- command [args...]
        sitter ask --ledger PATH --to NAME --sla SEC --reply-file ABS_PATH [--id EXPECT_ID] [--text TEXT] [--kill-file PATH] -- SEND [ARGS...]
        sitter ask --already-sent --ledger PATH --to NAME --sla SEC --reply-file ABS_PATH [--id EXPECT_ID] [--text TEXT] [--kill-file PATH]
        sitter watch --once --ledger PATH [--id EXPECT_ID] [--kill-file PATH]
+       sitter --help | -h | --version
 EOF
 }
 
@@ -1519,11 +1524,15 @@ run() {
   done
 }
 
-[[ $# -ge 1 ]] || { usage; exit 2; }
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+case $1 in
+  --help|-h) usage; exit 0 ;;
+  --version) printf 'sitter %s\n' "$SITTER_VERSION"; exit 0 ;;
+esac
 VERB=$1; shift
 case $VERB in
   expect|ack|sweep|run|ask|watch|__reserve_ask_prepare) ;;
-  *) usage; exit 2 ;;
+  *) usage >&2; exit 2 ;;
 esac
 
 SITTER_HOME=${SITTER_HOME:-"$HOME/.sitter"}

@@ -17,6 +17,57 @@ normal() {
   ! grep -q '"event":"stall"' "$CASE_DIR/slow.jsonl"
 }
 
+help_and_version_are_stdout_success() {
+  local flag name out err version_output version_pattern='^sitter [0-9][0-9.]*$'
+  for flag in --help -h; do
+    name=${flag#-}; name=${name#-}
+    out="$CASE_DIR/$name.out"; err="$CASE_DIR/$name.err"
+    "$SITTER" "$flag" >"$out" 2>"$err"
+    grep -q 'usage:' "$out"
+    [[ ! -s $err ]]
+    if grep -q '__reserve_ask_prepare' "$out"; then return 1; fi
+  done
+
+  out="$CASE_DIR/version.out"; err="$CASE_DIR/version.err"
+  "$SITTER" --version >"$out" 2>"$err"
+  [[ ! -s $err ]]
+  version_output=$(cat "$out")
+  [[ $version_output =~ $version_pattern ]]
+}
+
+usage_error_paths_stay_stderr_exit_two() {
+  local no_args_out="$CASE_DIR/no-args.out" no_args_err="$CASE_DIR/no-args.err"
+  local bogus_out="$CASE_DIR/bogus.out" bogus_err="$CASE_DIR/bogus.err"
+  local run_help_out="$CASE_DIR/run-help.out" run_help_err="$CASE_DIR/run-help.err"
+  assert_exit 2 "$SITTER" >"$no_args_out" 2>"$no_args_err"
+  assert_exit 2 "$SITTER" definitely-not-a-verb >"$bogus_out" 2>"$bogus_err"
+  assert_exit 2 "$SITTER" run --help >"$run_help_out" 2>"$run_help_err"
+  [[ ! -s $no_args_out && -s $no_args_err ]]
+  [[ ! -s $bogus_out && -s $bogus_err ]]
+  [[ ! -s $run_help_out && -s $run_help_err ]]
+  cmp "$no_args_err" "$bogus_err"
+}
+
+help_after_separator_reaches_wrapped_command() {
+  local receiver="$CASE_DIR/help-receiver.sh" received="$CASE_DIR/help-received"
+  # shellcheck disable=SC2016 # variables expand later, in the generated receiver script
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'received=$1' 'shift' \
+    'printf "%s\n" "$@" >>"$received"' >"$receiver"
+  chmod +x "$receiver"
+  run_case help-separator -- "$receiver" "$received" --help
+  grep -Fxq -- '--help' "$received"
+  assert_event_seq "$CASE_DIR/help-separator.jsonl" start end
+  grep -q '"event":"end","status":"success"' "$CASE_DIR/help-separator.jsonl"
+  assert_spy_count 0 "$CASE_DIR/help-separator.spy"
+}
+
+help_after_separator_still_hits_denylist() {
+  assert_exit 2 run_case help-separator-denied -- git push --help
+  [[ ! -d $CASE_DIR/home-help-separator-denied/logs ]]
+  assert_event_seq "$CASE_DIR/help-separator-denied.jsonl" refused
+  assert_spy_count 1 "$CASE_DIR/help-separator-denied.spy"
+}
+
 # ② flaky idempotent recovery; ③ idempotent hang restart; ④ non-idempotent hang.
 hang_restart() {
   local allow="$CASE_DIR/allow"
@@ -1855,7 +1906,7 @@ ASK_WATCH_TESTS=(
 )
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in normal hang_restart cooldown_crossing_restart_does_not_falsely_stall budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart cooldown_crossing_restart_does_not_falsely_stall budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"

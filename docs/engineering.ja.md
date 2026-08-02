@@ -135,8 +135,8 @@ command -v sitter
 リポジトリを clone して `install -m 0755 sitter ~/.local/bin/sitter` でも同じです。
 `command not found` になる場合は `~/.local/bin` を PATH に追加してください。
 
-> **メモ:** `sitter --help` は現状 usage を stderr に出して exit 2 で終わるため、
-> スクリプトでのインストール確認には使わないでください。下の動作確認は exit 0 です。
+> **メモ:** `sitter --help` は usage を stdout に出して exit 0 で終了し、
+> `sitter --version` はリリースを表示します。どちらもインストール確認に使えます。
 
 **動作確認**
 
@@ -418,7 +418,9 @@ bash / POSIX 環境を提供しないため、WSL（または実験的に Git Ba
 `ask` / `watch` の reply-file 境界が加わりました。同一 id の admission は原子的で、
 並行する `ask` のうち外部 sender を実行できるのは 1 件だけです。敗者は sender を
 実行する前に終了します。仕様は引き続き `docs/requirements-v0.md` に凍結されており、
-挙動変更には新しい要件ラウンドが必要です。据え置き項目と再訪トリガーは
+挙動変更には新しい要件ラウンドが必要です。v0.2.1 では stdout・exit 0 の
+`--help` / `-h` / `--version` が加わり、凍結済みの監視契約は変わりません。
+据え置き項目と再訪トリガーは
 [docs/design-history.md](design-history.md)
 に記録されています:
 

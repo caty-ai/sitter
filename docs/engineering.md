@@ -144,9 +144,8 @@ Cloning the repository and running `install -m 0755 sitter ~/.local/bin/sitter`
 does the same thing. If you get `command not found`, add `~/.local/bin` to
 your PATH.
 
-> **Note:** `sitter --help` currently prints its usage to stderr and exits 2,
-> so do not use it as an install check in a script. The functional check below
-> exits 0.
+> **Note:** `sitter --help` prints usage to stdout and exits 0, while
+> `sitter --version` reports the release; either works as an install check.
 
 **Verify**
 
@@ -444,7 +443,9 @@ deadman contract now includes the `ask` / `watch` reply-file boundary. Its
 same-id admission is atomic: one concurrent `ask` may run the external
 sender, while every loser exits before doing so. The specification remains
 frozen in `docs/requirements-v0.md`; behavior changes require a new
-requirements round. Deferred items and their triggers are recorded in
+requirements round. v0.2.1 adds the stdout, exit-0 `--help` / `-h` / `--version`
+surface without changing the frozen supervision contract. Deferred items and
+their triggers are recorded in
 [docs/design-history.md](design-history.md):
 
 - [x] `run` supervision: stall/timeout kill, bounded idempotent restarts, denylist refusal
