@@ -738,7 +738,12 @@ stolen_lock_release_spares_usurper() {
 assert_json_valid_without_python3_skips_once() {
   local ledger="$CASE_DIR/json-skip.jsonl" output
   printf '%s\n' '{"valid":true}' >"$ledger"
+  # GitHub Actions exports CI=true; unset it inside the subshell so this case
+  # exercises the non-CI SKIP branch rather than the hard-fail-in-CI branch.
+  # Unset in-script rather than via env -u so shellcheck still parses the
+  # single-quoted bash -c body as a script.
   output=$(bash -c '
+    unset CI
     source "$1"
     command() {
       [[ $1 == -v && $2 == python3 ]] && return 1
