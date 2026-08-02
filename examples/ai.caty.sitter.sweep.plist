@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.caty.sitter.sweep</string>
+  <!-- Replace every /path/to/... value for this operator. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/sitter</string>
+    <string>sweep</string>
+    <string>--once</string>
+    <string>--ledger</string>
+    <string>/path/to/runs.jsonl</string>
+    <string>--on-fail</string>
+    <string>/path/to/on-fail-hook.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

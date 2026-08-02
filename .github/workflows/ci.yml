@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded runs on the same ref are cancelled immediately.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/run.sh
+  # The development machine is macOS and every lane runs the full suite
+  # locally before a PR opens, so PR-time macOS coverage duplicates those
+  # runs. macOS and Windows are merge gates on main pushes instead.
+  macos:
+    if: github.event_name == 'push'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/run.sh
+  windows:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/run.sh
+  shellcheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck sitter tests/*.sh tests/fixtures/*.sh scripts/*.sh examples/*.sh

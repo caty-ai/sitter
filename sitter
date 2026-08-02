@@ -1,0 +1,1607 @@
+#!/usr/bin/env bash
+# sitter v0: a dependency-free, bounded supervisor for one wrapped command.
+#
+# Ledger key order is deliberately fixed for grep-friendly consumers:
+# ts,event,status,project,agent,task,attempt,detail,sessionId,cwd,schema,
+# event_id,run_id,exit_code,log_path,stall_s,reason,retries,cooldown_s,
+# idempotent,detail_truncated,hook_exit_code
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage: sitter run --ledger PATH --on-fail CMD [options] -- command [args...]
+       sitter expect --ledger PATH --on-fail CMD --id EXPECT_ID [options]
+       sitter ack --ledger PATH --id EXPECT_ID [--detail TEXT]
+       sitter sweep --once --ledger PATH --on-fail CMD
+       sitter ask --ledger PATH --to NAME --sla SEC --reply-file ABS_PATH [--id EXPECT_ID] [--text TEXT] [--kill-file PATH] -- SEND [ARGS...]
+       sitter ask --already-sent --ledger PATH --to NAME --sla SEC --reply-file ABS_PATH [--id EXPECT_ID] [--text TEXT] [--kill-file PATH]
+       sitter watch --once --ledger PATH [--id EXPECT_ID] [--kill-file PATH]
+EOF
+}
+
+die() { printf 'sitter: %s\n' "$*" >&2; exit 2; }
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+now_epoch() { date +%s; }
+timestamp() { date -u '+%Y-%m-%dT%H:%M:%S.000Z'; }
+
+# Bash 3.2-compatible JSON escaping.  Iterate bytes so control characters
+# cannot turn a ledger line into multiple JSONL records.
+json_quote() {
+  local value=$1 ch code i escaped=''
+  LC_ALL=C
+  for ((i = 0; i < ${#value}; i++)); do
+    ch=${value:i:1}
+    case $ch in
+      '"') escaped+=$'\\"' ;;
+      "\\") escaped+=$'\\\\' ;;
+      $'\n') escaped+=$'\\n' ;;
+      $'\r') escaped+=$'\\r' ;;
+      $'\t') escaped+=$'\\t' ;;
+      [$'\x01'-$'\x1f'])
+        printf -v code '%d' "'$ch"
+        printf -v ch '\\u%04x' "$code"
+        escaped+=$ch
+        ;;
+      *) escaped+=$ch ;;
+    esac
+  done
+  printf '"%s"' "$escaped"
+}
+
+valid_expect_id() { [[ $1 =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
+
+# Keep expect-family strings in the compact JSON subset replay understands:
+# strip control bytes plus '"' and '\' (the only bytes that break the sed
+# field extraction); multibyte UTF-8 passes through untouched.
+sanitize_expect_value() {
+  local value=$1 ch i clean=''
+  LC_ALL=C
+  for ((i = 0; i < ${#value}; i++)); do
+    ch=${value:i:1}
+    case $ch in
+      [$'\x01'-$'\x1f'] | '"' | "\\") continue ;;
+    esac
+    clean+=$ch
+  done
+  printf '%s' "$clean"
+}
+
+# Bash slices bytes under LC_ALL=C.  Remove an incomplete final UTF-8 sequence
+# rather than serialising a broken string when a byte limit lands mid-codepoint.
+truncate_utf8() {
+  local value=$1 limit=$2 clipped ch n i declared
+  LC_ALL=C
+  clipped=${value:0:limit}
+  if [[ ${ICONV_OK:-false} == true ]]; then
+    while [[ -n $clipped ]] && ! printf '%s' "$clipped" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; do
+      clipped=${clipped:0:${#clipped}-1}
+    done
+  else
+    n=${#clipped}; i=1
+    while ((i <= 4 && i <= n)); do
+      ch=${clipped:n-i:1}
+      case $ch in
+        [$'\x80'-$'\xbf']) i=$((i+1)); continue ;;
+        [$'\xc2'-$'\xdf']) declared=2 ;;
+        [$'\xe0'-$'\xef']) declared=3 ;;
+        [$'\xf0'-$'\xf4']) declared=4 ;;
+        *) break ;;
+      esac
+      ((declared > i)) && clipped=${clipped:0:n-i}
+      break
+    done
+  fi
+  printf '%s' "$clipped"
+}
+
+detect_iconv() {
+  ICONV_OK=false
+  if printf 'x' | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+     && ! printf '\x80' | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+    ICONV_OK=true
+  fi
+}
+
+detect_stat_mtime() {
+  local probe output
+  probe=$(mktemp "${LEDGER_DIR}/.sitter-stat.XXXXXX") || die 'cannot create stat probe'
+  if output=$(stat -f %m "$probe" 2>/dev/null) && is_uint "$output"; then
+    STAT_MTIME_STYLE=bsd
+  elif output=$(stat -c %Y "$probe" 2>/dev/null) && is_uint "$output"; then
+    STAT_MTIME_STYLE=gnu
+  else
+    rm -f "$probe"
+    die 'cannot determine a compatible stat mtime format'
+  fi
+  rm -f "$probe"
+}
+
+file_mtime() {
+  case $STAT_MTIME_STYLE in
+    bsd) stat -f %m "$1" 2>/dev/null ;;
+    gnu) stat -c %Y "$1" 2>/dev/null ;;
+  esac
+}
+
+detect_hash_tool() {
+  local output
+  if output=$(printf 'x' | shasum -a 256 2>/dev/null | awk '{print $1}') && [[ $output == 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 ]]; then
+    HASH_TOOL=shasum
+  elif output=$(printf 'x' | sha256sum 2>/dev/null | awk '{print $1}') && [[ $output == 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 ]]; then
+    HASH_TOOL=sha256sum
+  else
+    die 'cannot find a usable SHA-256 tool (shasum or sha256sum)'
+  fi
+}
+
+hash256_stdin() {
+  case $HASH_TOOL in
+    shasum) "$HASH_TOOL" -a 256 ;;
+    sha256sum) "$HASH_TOOL" ;;
+    *) die 'hash tool not detected' ;;
+  esac | awk '{print $1}'
+}
+
+detect_event_clock() {
+  local output
+  output=$(date +%s%N 2>/dev/null || true)
+  [[ $output =~ ^[0-9]+$ ]] && EVENT_CLOCK_NANO=true
+}
+
+append_locked() {
+  local record=$1 temp append_rc=0
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  temp=$(mktemp "${LEDGER_DIR}/.sitter-ledger.XXXXXX") || return 1
+  chmod 600 "$temp" || { rm -f "$temp"; return 1; }
+  printf '%s\n' "$record" >"$temp" || { rm -f "$temp"; return 1; }
+  # Keep cleanup in the parent even when a lock guard or mkdir-tier timeout
+  # exits the lock-owning subprocess.
+  # shellcheck disable=SC2016 # the child shell receives positional arguments
+  if ( with_ledger_lock sh -c 'cat "$1" >> "$2"' sh "$temp" "$LEDGER" ); then
+    append_rc=0
+  else
+    append_rc=$?
+  fi
+  rm -f "$temp"
+  return "$append_rc"
+}
+
+copy_ledger_locked() {
+  local destination=$1 copy_rc=0
+  with_ledger_lock cp "$LEDGER" "$destination" || copy_rc=$?
+  return "$copy_rc"
+}
+
+with_ledger_lock() {
+  local lock="${LEDGER}.lock" lockdir lock_started lock_mtime lock_age my_tok owner_tok stale_lockdir lock_rc=0
+  [[ ! -L $lock ]] || die 'ledger lock must not be a symlink'
+  : >"$lock" || return 1
+  chmod 600 "$lock" || return 1
+  if command -v flock >/dev/null 2>&1; then
+    flock "$lock" "$@" || lock_rc=$?
+  elif command -v lockf >/dev/null 2>&1; then
+    lockf -k "$lock" "$@" || lock_rc=$?
+  else
+    lockdir="${lock}.d"; lock_started=$(now_epoch)
+    while ! mkdir "$lockdir" 2>/dev/null; do
+      if lock_mtime=$(file_mtime "$lockdir") && is_uint "$lock_mtime"; then
+        lock_age=$(( $(now_epoch) - lock_mtime ))
+        ((lock_age > 300)) && { stale_lockdir="${lockdir}.stale.$$.$RANDOM"; mv -- "$lockdir" "$stale_lockdir" 2>/dev/null || true; rm -rf -- "$stale_lockdir" 2>/dev/null || true; continue; }
+      fi
+      (( $(now_epoch) - lock_started >= 60 )) && die 'timed out waiting for ledger lock'
+      sleep 1
+    done
+    my_tok="$$-$lock_started-$RANDOM"
+    printf '%s' "$my_tok" 2>/dev/null >"$lockdir/owner" || true
+    "$@" || lock_rc=$?
+    owner_tok=''
+    read -r owner_tok 2>/dev/null <"$lockdir/owner" || [[ -n $owner_tok ]] || owner_tok=''
+    if [[ -n $owner_tok && $owner_tok == "$my_tok" ]]; then
+      rm -f 2>/dev/null -- "$lockdir/owner" || true
+      rmdir -- "$lockdir" 2>/dev/null || true
+    fi
+  fi
+  return "$lock_rc"
+}
+
+new_event_id() {
+  if [[ $EVENT_CLOCK_NANO == true ]]; then
+    printf 'e-%s-%s-%s' "$$" "$(date +%s%N)" "$EVENT_SEQUENCE"
+  else
+    printf 'e-%s-%s-%s' "$$" "$(now_epoch)" "$EVENT_SEQUENCE"
+  fi
+}
+
+emit_event() {
+  local event=$1 status=$2 attempt=$3 detail=$4 exit_code=$5 reason=$6 hook_reason=${7:-}
+  local event_id hook_exit='null' short_detail detail_truncated=false record
+  LC_ALL=C
+  short_detail=$(truncate_utf8 "$detail" 512)
+  if ((${#detail} > 512)); then detail_truncated=true; fi
+  EVENT_SEQUENCE=$((EVENT_SEQUENCE + 1))
+  event_id=$(new_event_id)
+  if [[ -n $hook_reason ]]; then
+    hook_exit=$(invoke_hook "$event" "$hook_reason" "$event_id" "$attempt" "$short_detail")
+  fi
+  record=$(printf '{"ts":%s,"event":%s,"status":%s,"project":%s,"agent":%s,"task":%s,"attempt":%s,"detail":%s,"sessionId":%s,"cwd":%s,"schema":"sitter.v0","event_id":%s,"run_id":%s,"exit_code":%s,"log_path":%s,"stall_s":%s,"reason":%s,"retries":%s,"cooldown_s":%s,"idempotent":%s,"detail_truncated":%s,"hook_exit_code":%s}' \
+    "$(json_quote "$(timestamp)")" "$(json_quote "$event")" "$(json_quote "$status")" \
+    "$(json_quote "$PROJECT")" "$(json_quote "$AGENT")" "$(json_quote "$TASK")" "$attempt" \
+    "$(json_quote "$short_detail")" "$(json_quote "$SESSION_ID")" "$(json_quote "$WORK_CWD")" \
+    "$(json_quote "$event_id")" "$(json_quote "$RUN_ID")" "$exit_code" "$(json_quote "$LOG_PATH")" \
+    "$STALL_AFTER" "$(json_quote "$reason")" "$RETRIES" "$COOLDOWN" "$IDEMPOTENT_BOOL" \
+    "$detail_truncated" "$hook_exit")
+  append_locked "$record"
+}
+
+invoke_hook() {
+  local event=$1 reason=$2 event_id=$3 attempt=$4 detail=$5 text short_detail payload code hookin pid deadline term_deadline reap_deadline hook_ts hook_group=false escalated=false
+  LC_ALL=C
+  text=$(truncate_utf8 "$detail" 140)
+  short_detail=$(truncate_utf8 "$detail" 200)
+  hook_ts=$(timestamp)
+  payload=$(printf '{"SITTER_EVENT":%s,"SITTER_REASON":%s,"SITTER_RUN_ID":%s,"SITTER_EXPECT_ID":%s,"SITTER_EVENT_ID":%s,"SITTER_PROJECT":%s,"SITTER_AGENT":%s,"SITTER_TASK":%s,"SITTER_TEXT":%s,"SITTER_DETAIL":%s,"SITTER_ATTEMPT":%s,"SITTER_LEDGER":%s,"SITTER_TS":%s}' \
+    "$(json_quote "$event")" "$(json_quote "$reason")" "$(json_quote "$RUN_ID")" "$(json_quote "${SITTER_EXPECT_ID:-}")" \
+    "$(json_quote "$event_id")" \
+    "$(json_quote "$PROJECT")" "$(json_quote "$AGENT")" "$(json_quote "$TASK")" \
+    "$(json_quote "$text")" "$(json_quote "$short_detail")" "$attempt" "$(json_quote "$LEDGER")" "$(json_quote "$hook_ts")")
+  hookin=$(mktemp) || { printf 'null'; return; }
+  printf '%s\n' "$payload" >"$hookin"
+  if command -v perl >/dev/null 2>&1; then
+    # Isolate the hook so TERM/KILL reaches an uncooperative hook and every
+    # descendant without touching lockf's re-entered sweep process.
+    env SITTER_EVENT="$event" SITTER_REASON="$reason" SITTER_RUN_ID="$RUN_ID" SITTER_EXPECT_ID="${SITTER_EXPECT_ID:-}" \
+      SITTER_EVENT_ID="$event_id" SITTER_PROJECT="$PROJECT" SITTER_AGENT="$AGENT" SITTER_TASK="$TASK" \
+      SITTER_TEXT="$text" SITTER_DETAIL="$short_detail" SITTER_ATTEMPT="$attempt" SITTER_LEDGER="$LEDGER" \
+      SITTER_TS="$hook_ts" perl -MPOSIX=setsid -e 'setsid() or exit 127; exec @ARGV' sh -c "$ON_FAIL" <"$hookin" >/dev/null 2>&1 &
+    hook_group=true
+  else
+    env SITTER_EVENT="$event" SITTER_REASON="$reason" SITTER_RUN_ID="$RUN_ID" SITTER_EXPECT_ID="${SITTER_EXPECT_ID:-}" \
+      SITTER_EVENT_ID="$event_id" SITTER_PROJECT="$PROJECT" SITTER_AGENT="$AGENT" SITTER_TASK="$TASK" \
+      SITTER_TEXT="$text" SITTER_DETAIL="$short_detail" SITTER_ATTEMPT="$attempt" SITTER_LEDGER="$LEDGER" \
+      SITTER_TS="$hook_ts" sh -c "$ON_FAIL" <"$hookin" >/dev/null 2>&1 &
+  fi
+  pid=$!
+  deadline=$(( $(now_epoch) + HOOK_TIMEOUT ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( $(now_epoch) >= deadline )); then
+      escalated=true
+      if [[ $hook_group == true ]]; then kill -TERM -- "-$pid" 2>/dev/null || true; else kill -TERM "$pid" 2>/dev/null || true; fi
+      term_deadline=$(( $(now_epoch) + HOOK_KILL_GRACE ))
+      if [[ $hook_group == true ]]; then
+        while kill -0 -- "-$pid" 2>/dev/null && (( $(now_epoch) < term_deadline )); do sleep 1; done
+        if kill -0 -- "-$pid" 2>/dev/null; then kill -KILL -- "-$pid" 2>/dev/null || true; fi
+      else
+        while kill -0 "$pid" 2>/dev/null && (( $(now_epoch) < term_deadline )); do sleep 1; done
+        if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+      fi
+      break
+    fi
+    sleep 1
+  done
+  if [[ $hook_group == true && $escalated == false ]] && kill -0 -- "-$pid" 2>/dev/null; then
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    term_deadline=$(( $(now_epoch) + HOOK_KILL_GRACE ))
+    while kill -0 -- "-$pid" 2>/dev/null && (( $(now_epoch) < term_deadline )); do sleep 1; done
+    if kill -0 -- "-$pid" 2>/dev/null; then kill -KILL -- "-$pid" 2>/dev/null || true; fi
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    reap_deadline=$(( $(now_epoch) + HOOK_KILL_GRACE ))
+    while kill -0 "$pid" 2>/dev/null && (( $(now_epoch) < reap_deadline )); do sleep 1; done
+    if kill -0 "$pid" 2>/dev/null; then
+      code=137
+    else
+      set +e
+      wait "$pid"; code=$?
+      set -e
+    fi
+  else
+    set +e
+    wait "$pid"; code=$?
+    set -e
+  fi
+  rm -f "$hookin"
+  printf '%s' "$code"
+}
+
+# Expect-family records retain the inherited ledger fields, then append their
+# fixed extension block.  Keeping this separate from run's emitter avoids
+# changing its hook-before-record behavior.
+emit_expect_event() {
+  local event=$1 state=$2 expect_id=$3 to=$4 text_value=$5 sla=$6 nudges=$7 detail=$8
+  local event_id short_text short_detail detail_truncated=false record
+  LC_ALL=C
+  short_text=$(truncate_utf8 "$text_value" 140)
+  short_detail=$(truncate_utf8 "$detail" 512)
+  ((${#detail} > ${#short_detail})) && detail_truncated=true
+  EVENT_SEQUENCE=$((EVENT_SEQUENCE + 1))
+  event_id=$(new_event_id)
+  record=$(printf '{"ts":%s,"event":%s,"status":"","project":%s,"agent":%s,"task":%s,"attempt":0,"detail":%s,"sessionId":"","cwd":%s,"schema":"sitter.v0","event_id":%s,"run_id":"","exit_code":null,"log_path":"","stall_s":0,"reason":"","retries":0,"cooldown_s":0,"idempotent":false,"detail_truncated":%s,"hook_exit_code":null,"expect_id":%s,"to":%s,"text":%s,"sla_s":%s,"nudges":%s,"state":%s}' \
+    "$(json_quote "$(timestamp)")" "$(json_quote "$event")" \
+    "$(json_quote "$PROJECT")" "$(json_quote "$AGENT")" "$(json_quote "$TASK")" \
+    "$(json_quote "$short_detail")" "$(json_quote "$WORK_CWD")" "$(json_quote "$event_id")" \
+    "$detail_truncated" "$(json_quote "$expect_id")" "$(json_quote "$to")" "$(json_quote "$short_text")" \
+    "$sla" "$nudges" "$(json_quote "$state")")
+  append_locked "$record" || return $?
+  LAST_EVENT_ID=$event_id
+}
+
+emit_ask_event() {
+  local event=$1 state=$2 expect_id=$3 to=$4 text_value=$5 sla=$6 nudges=$7 detail=$8
+  local exit_code=$9 reply_file=${10} reply_bytes=${11} reply_sha=${12}
+  build_ask_event_record "$event" "$state" "$expect_id" "$to" "$text_value" "$sla" "$nudges" "$detail" \
+    "$exit_code" "$reply_file" "$reply_bytes" "$reply_sha" || return $?
+  append_locked "$ASK_EVENT_RECORD" || return $?
+  LAST_EVENT_ID=$ASK_EVENT_ID
+}
+
+build_ask_event_record() {
+  local event=$1 state=$2 expect_id=$3 to=$4 text_value=$5 sla=$6 nudges=$7 detail=$8
+  local exit_code=$9 reply_file=${10} reply_bytes=${11} reply_sha=${12}
+  local event_id short_text short_detail detail_truncated=false record bytes_json sha_json
+  LC_ALL=C
+  short_text=$(truncate_utf8 "$text_value" 140)
+  short_detail=$(truncate_utf8 "$detail" 512)
+  ((${#detail} > ${#short_detail})) && detail_truncated=true
+  EVENT_SEQUENCE=$((EVENT_SEQUENCE + 1))
+  event_id=$(new_event_id)
+  bytes_json=$reply_bytes
+  sha_json=null
+  [[ $reply_sha != null ]] && sha_json=$(json_quote "$reply_sha")
+  record=$(printf '{"ts":%s,"event":%s,"status":"","project":%s,"agent":%s,"task":%s,"attempt":0,"detail":%s,"sessionId":"","cwd":%s,"schema":"sitter.v1","event_id":%s,"run_id":"","exit_code":%s,"log_path":"","stall_s":0,"reason":"","retries":0,"cooldown_s":0,"idempotent":false,"detail_truncated":%s,"hook_exit_code":null,"expect_id":%s,"to":%s,"text":%s,"sla_s":%s,"nudges":%s,"state":%s,"reply_file":%s,"reply_bytes":%s,"reply_sha256":%s}' \
+    "$(json_quote "$(timestamp)")" "$(json_quote "$event")" \
+    "$(json_quote "$PROJECT")" "$(json_quote "$AGENT")" "$(json_quote "$TASK")" \
+    "$(json_quote "$short_detail")" "$(json_quote "$WORK_CWD")" "$(json_quote "$event_id")" \
+    "$exit_code" "$detail_truncated" "$(json_quote "$expect_id")" "$(json_quote "$to")" \
+    "$(json_quote "$short_text")" "$sla" "$nudges" "$(json_quote "$state")" \
+    "$(json_quote "$reply_file")" "$bytes_json" "$sha_json")
+  ASK_EVENT_ID=$event_id
+  ASK_EVENT_RECORD=$record
+}
+
+timestamp_epoch() {
+  local value=$1 base output
+  base=$(printf '%s' "$value" | sed 's/\.[0-9][0-9]*Z$/Z/')
+  [[ $base =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  if output=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$base" '+%s' 2>/dev/null) && is_uint "$output"; then
+    printf '%s' "$output"
+  elif output=$(date -u -d "$base" '+%s' 2>/dev/null) && is_uint "$output"; then
+    printf '%s' "$output"
+  else
+    return 1
+  fi
+}
+
+expect_replay_line() {
+  local line=$1 id ts state event to text_value sla nudges schema reply_file reply_bytes reply_sha reply_sha_field
+  if [[ $line == *'"schema":"sitter.v0"'* && $line == *'"expect_id":'* ]]; then
+    schema=sitter.v0
+  elif [[ $line == *'"schema":"sitter.v1"'* ]]; then
+    schema=sitter.v1
+  else
+    return 0
+  fi
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"expect_id":"\([^"]*\)".*/\1/p')
+  [[ -n $id ]] || return 2
+  if ! valid_expect_id "$id"; then
+    [[ $schema == sitter.v1 ]] && return 2
+    return 0
+  fi
+  ts=$(printf '%s\n' "$line" | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')
+  event=$(printf '%s\n' "$line" | sed -n 's/.*"event":"\([^"]*\)".*/\1/p')
+  state=$(printf '%s\n' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+  [[ -n $ts && -n $state && -n $event ]] || return 2
+  if [[ $schema == sitter.v0 ]]; then
+    case $state in pending|nudged1|nudged2|awaiting_human|acked|quarantined) ;; *) return 2 ;; esac
+  else
+    case $state in pending|acked|prepared|send_failed) ;; *) return 2 ;; esac
+  fi
+  to=$(printf '%s\n' "$line" | sed -n 's/.*"to":"\([^"]*\)".*/\1/p')
+  text_value=$(printf '%s\n' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+  if [[ $schema == sitter.v1 ]]; then
+    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([^,}]*\).*/\1/p')
+    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([^,}]*\).*/\1/p')
+  else
+    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([0-9][0-9]*\).*/\1/p')
+    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([0-9][0-9]*\).*/\1/p')
+  fi
+  is_uint "$sla" && is_uint "$nudges" || return 2
+  reply_file='' reply_bytes=null reply_sha=null
+  if [[ $schema == sitter.v1 ]]; then
+    case "$event:$state" in
+      ask_prepare:prepared|expect:pending|ask_send_failed:send_failed|refused:acked) ;;
+      *) return 2 ;;
+    esac
+    reply_file=$(printf '%s\n' "$line" | sed -n 's/.*"reply_file":"\([^"]*\)".*/\1/p')
+    [[ -n $reply_file ]] && valid_reply_path "$reply_file" || return 2
+    reply_bytes=$(printf '%s\n' "$line" | sed -n 's/.*"reply_bytes":\([^,}]*\).*/\1/p')
+    [[ $reply_bytes == null ]] || is_uint "$reply_bytes" || return 2
+    reply_sha_field=$(printf '%s\n' "$line" | sed -n 's/.*"reply_sha256":\([^,}]*\).*/\1/p')
+    if [[ $reply_sha_field == null ]]; then
+      reply_sha=null
+    else
+      [[ $reply_sha_field =~ ^\"[0-9a-f]{64}\"$ ]] || return 2
+      reply_sha=${reply_sha_field:1:${#reply_sha_field}-2}
+    fi
+    if [[ $reply_bytes == null && $reply_sha != null ]] || [[ $reply_bytes != null && $reply_sha == null ]]; then return 2; fi
+  fi
+  REPLAY_ID=$id REPLAY_TS=$ts REPLAY_EVENT=$event REPLAY_STATE=$state REPLAY_TO=$to REPLAY_TEXT=$text_value REPLAY_SLA=$sla
+  REPLAY_SCHEMA=$schema REPLAY_REPLY_FILE=$reply_file REPLAY_REPLY_BYTES=$reply_bytes REPLAY_REPLY_SHA=$reply_sha
+  return 1
+}
+
+failcount_key() { printf '%s' "$1" | hash256_stdin; }
+
+failcount_increment() {
+  local key=$1 count=0 row_key row_count temp
+  if [[ -f $FAILCOUNTS ]]; then
+    while IFS=' ' read -r row_key row_count || [[ -n $row_key ]]; do
+      if [[ $row_key == "$key" ]]; then count=$row_count; break; fi
+    done <"$FAILCOUNTS"
+  fi
+  is_uint "$count" || count=0
+  count=$((count + 1))
+  temp=$(mktemp "$SITTER_HOME/.sitter-failcounts.XXXXXX") || die 'cannot update fail counts'
+  if [[ -f $FAILCOUNTS ]]; then awk -v target="$key" '$1 != target { print }' "$FAILCOUNTS" >"$temp"; fi
+  printf '%s %s\n' "$key" "$count" >>"$temp"
+  mv "$temp" "$FAILCOUNTS"; chmod 600 "$FAILCOUNTS"
+  printf '%s' "$count"
+}
+
+is_quarantined_key() { grep -Fqx -- "$1" "$QUARANTINED" 2>/dev/null; }
+mark_quarantined_key() { printf '%s\n' "$1" >>"$QUARANTINED"; chmod 600 "$QUARANTINED"; }
+
+record_poison() {
+  local raw_line=$1 key count
+  key=$(failcount_key "ledger:$LEDGER line:$raw_line")
+  is_quarantined_key "$key" && return
+  count=$(failcount_increment "$key")
+  if ((count >= 3)); then
+    emit_expect_event quarantine quarantined "$key" '' '' 0 0 'poisoned expect-family ledger line'
+    mark_quarantined_key "$key"
+  fi
+}
+
+record_hook_failure() {
+  local expect_id=$1 key count
+  key=$(failcount_key "ledger:$LEDGER id:$expect_id")
+  is_quarantined_key "$key" && return
+  count=$(failcount_increment "$key")
+  if ((count >= 3)); then
+    emit_expect_event quarantine quarantined "$expect_id" '' '' 0 0 'expect hook failed repeatedly'
+    mark_quarantined_key "$key"
+  fi
+}
+
+hook_for_expect() {
+  local event=$1 reason=$2 event_id=$3 expect_id=$4 text_value=$5 code
+  RUN_ID=''
+  # invoke_hook is shared with run; its SITTER_TEXT comes from detail, so use
+  # the expectation text as the detail argument and add the expect identifier.
+  code=$(SITTER_EXPECT_ID="$expect_id" invoke_hook "$event" "$reason" "$event_id" 0 "$text_value")
+  printf '%s' "$code"
+}
+
+active_expect_id() {
+  local wanted=$1 line rc last_state=''
+  while IFS= read -r line || [[ -n $line ]]; do
+    if expect_replay_line "$line"; then rc=0; else rc=$?; fi
+    [[ $rc -eq 1 && $REPLAY_ID == "$wanted" ]] || continue
+    [[ $last_state == quarantined ]] && continue
+    case $REPLAY_EVENT in
+      expect) last_state=pending ;;
+      ask_prepare) [[ $REPLAY_SCHEMA != sitter.v1 ]] || last_state=prepared ;;
+      ask_send_failed) [[ $REPLAY_SCHEMA != sitter.v1 || $last_state != prepared ]] || last_state=send_failed ;;
+      refused)
+        if [[ $REPLAY_SCHEMA == sitter.v1 || -z $last_state || $last_state == acked ]]; then last_state=acked; fi
+        ;;
+      ack)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=acked ;; esac
+        fi
+        ;;
+      nudge|awaiting_human|quarantine)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=$REPLAY_STATE ;; esac
+        fi
+        ;;
+    esac
+  done <"$LEDGER"
+  case $last_state in prepared|send_failed|pending|nudged1|nudged2|awaiting_human|quarantined) return 0 ;; *) return 1 ;; esac
+}
+
+live_expect_state() {
+  local wanted=$1 line rc last_state=''
+  while IFS= read -r line || [[ -n $line ]]; do
+    if expect_replay_line "$line"; then rc=0; else rc=$?; fi
+    [[ $rc -eq 1 && $REPLAY_ID == "$wanted" ]] || continue
+    [[ $last_state == quarantined ]] && continue
+    case $REPLAY_EVENT in
+      expect) last_state=pending ;;
+      ask_prepare) [[ $REPLAY_SCHEMA != sitter.v1 ]] || last_state=prepared ;;
+      ask_send_failed) [[ $REPLAY_SCHEMA != sitter.v1 || $last_state != prepared ]] || last_state=send_failed ;;
+      refused)
+        if [[ $REPLAY_SCHEMA == sitter.v1 || -z $last_state || $last_state == acked ]]; then last_state=acked; fi
+        ;;
+      ack)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=acked ;; esac
+        fi
+        ;;
+      nudge|awaiting_human|quarantine)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=$REPLAY_STATE ;; esac
+        fi
+        ;;
+    esac
+  done <"$LEDGER"
+  printf '%s' "$last_state"
+}
+
+expect() {
+  [[ -n $LEDGER && -n $ON_FAIL && -n $EXPECT_ID ]] || die '--ledger, --on-fail, and --id are required'
+  is_uint "$SLA" || die '--sla must be a non-negative integer'
+  valid_expect_id "$EXPECT_ID" || die '--id must match ^[A-Za-z0-9._-]{1,64}$'
+  EXPECT_TO=$(sanitize_expect_value "$EXPECT_TO")
+  EXPECT_TEXT=$(sanitize_expect_value "$EXPECT_TEXT")
+  SLA=$((10#$SLA)); umask 077; LEDGER_DIR=$(dirname "$LEDGER"); mkdir -p "$LEDGER_DIR" "$SITTER_HOME"; chmod 700 "$SITTER_HOME"
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  : >>"$LEDGER"; chmod 600 "$LEDGER"; detect_stat_mtime; detect_event_clock; detect_iconv
+  if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then emit_expect_event refused acked "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 'kill switch present'; return; fi
+  active_expect_id "$EXPECT_ID" && die 'expect id is already active or permanently quarantined'
+  emit_expect_event expect pending "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 ''
+}
+
+clear_expect_side_state() {
+  local expect_id=$1 key temp
+  FAILCOUNTS="$SITTER_HOME/failcounts"
+  QUARANTINED="$SITTER_HOME/quarantined"
+  [[ -n ${HASH_TOOL:-} ]] || detect_hash_tool
+  key=$(failcount_key "ledger:$LEDGER id:$expect_id")
+  if [[ -f $QUARANTINED ]]; then
+    temp=$(mktemp "$SITTER_HOME/.sitter-quarantined.XXXXXX") || die 'cannot clear quarantine'
+    awk -v t="$key" '$0 != t' "$QUARANTINED" >"$temp"
+    mv "$temp" "$QUARANTINED"; chmod 600 "$QUARANTINED"
+  fi
+  if [[ -f $FAILCOUNTS ]]; then
+    temp=$(mktemp "$SITTER_HOME/.sitter-failcounts.XXXXXX") || die 'cannot clear fail counts'
+    awk -v target="$key" '$1 != target { print }' "$FAILCOUNTS" >"$temp"
+    mv "$temp" "$FAILCOUNTS"; chmod 600 "$FAILCOUNTS"
+  fi
+}
+
+ack_transition() {
+  local expect_id=$1 detail=$2
+  emit_expect_event ack acked "$expect_id" '' '' 0 0 "$detail" || return $?
+  clear_expect_side_state "$expect_id"
+}
+
+ack() {
+  [[ -n $LEDGER && -n $EXPECT_ID ]] || die '--ledger and --id are required'
+  valid_expect_id "$EXPECT_ID" || die '--id must match ^[A-Za-z0-9._-]{1,64}$'
+  umask 077; LEDGER_DIR=$(dirname "$LEDGER"); mkdir -p "$LEDGER_DIR" "$SITTER_HOME"; chmod 700 "$SITTER_HOME"
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  : >>"$LEDGER"; chmod 600 "$LEDGER"; detect_stat_mtime; detect_event_clock; detect_iconv
+  ack_transition "$EXPECT_ID" "$ACK_DETAIL"
+}
+
+valid_reply_path() {
+  local value=$1 ch i
+  [[ $value == /* && $value != *'"'* && $value != *\\* ]] || return 1
+  LC_ALL=C
+  for ((i = 0; i < ${#value}; i++)); do
+    ch=${value:i:1}
+    case $ch in [$'\x01'-$'\x1f'] | $'\x7f') return 1 ;; esac
+  done
+}
+
+detect_reply_hash_tool() {
+  local output
+  if output=$(printf 'x' | shasum -a 256 2>/dev/null | awk '{print $1}') \
+     && [[ $output == 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 ]]; then
+    HASH_TOOL=shasum
+  elif output=$(printf 'x' | sha256sum 2>/dev/null | awk '{print $1}') \
+       && [[ $output == 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 ]]; then
+    HASH_TOOL=sha256sum
+  else
+    printf 'sitter: cannot find a usable SHA-256 tool (shasum or sha256sum)\n' >&2
+    return 1
+  fi
+}
+
+observe_reply_file() {
+  local path=$1 bytes sha
+  OBS_BYTES=null OBS_SHA=null OBS_KIND=absent
+  if [[ ! -e $path ]]; then return 0; fi
+  if [[ ! -f $path ]]; then
+    OBS_KIND=nonregular
+    return 1
+  fi
+  if [[ ! -r $path ]]; then
+    OBS_KIND=unreadable
+    return 1
+  fi
+  bytes=$(wc -c <"$path" 2>/dev/null) || { OBS_KIND=unreadable; return 1; }
+  bytes=${bytes//[[:space:]]/}
+  is_uint "$bytes" || { OBS_KIND=unreadable; return 1; }
+  if [[ $HASH_TOOL == shasum ]]; then
+    sha=$(shasum -a 256 <"$path" 2>/dev/null | awk '{print $1}') || { OBS_KIND=unreadable; return 1; }
+  else
+    sha=$(sha256sum <"$path" 2>/dev/null | awk '{print $1}') || { OBS_KIND=unreadable; return 1; }
+  fi
+  [[ $sha =~ ^[0-9a-f]{64}$ ]] || { OBS_KIND=unreadable; return 1; }
+  OBS_BYTES=$((10#$bytes)) OBS_SHA=$sha OBS_KIND=present
+}
+
+init_ask_ledger() {
+  umask 077
+  LEDGER_DIR=$(dirname "$LEDGER")
+  mkdir -p "$LEDGER_DIR" "$SITTER_HOME" || return 1
+  chmod 700 "$SITTER_HOME" || return 1
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  : >>"$LEDGER" || return 1
+  chmod 600 "$LEDGER" || return 1
+  detect_stat_mtime
+  detect_event_clock
+  detect_iconv
+}
+
+ask_generation_state() {
+  local wanted=$1 line rc
+  ASK_STATE='' ASK_TO='' ASK_TEXT='' ASK_SLA='' ASK_REPLY_FILE='' ASK_REPLY_BYTES=null ASK_REPLY_SHA=null
+  while IFS= read -r line || [[ -n $line ]]; do
+    if expect_replay_line "$line"; then rc=0; else rc=$?; fi
+    [[ $rc -eq 1 && $REPLAY_ID == "$wanted" ]] || continue
+    if [[ $REPLAY_SCHEMA == sitter.v1 ]]; then
+      case $REPLAY_EVENT in
+        ask_prepare)
+          ASK_STATE=prepared
+          ASK_TO=$REPLAY_TO ASK_TEXT=$REPLAY_TEXT ASK_SLA=$REPLAY_SLA
+          ASK_REPLY_FILE=$REPLAY_REPLY_FILE ASK_REPLY_BYTES=$REPLAY_REPLY_BYTES ASK_REPLY_SHA=$REPLAY_REPLY_SHA
+          ;;
+        expect)
+          ASK_STATE=pending
+          ASK_TO=$REPLAY_TO ASK_TEXT=$REPLAY_TEXT ASK_SLA=$REPLAY_SLA
+          ASK_REPLY_FILE=$REPLAY_REPLY_FILE ASK_REPLY_BYTES=$REPLAY_REPLY_BYTES ASK_REPLY_SHA=$REPLAY_REPLY_SHA
+          ;;
+        ask_send_failed)
+          [[ -n $ASK_STATE ]] && ASK_STATE=send_failed
+          ;;
+        refused)
+          ASK_STATE=acked
+          ASK_TO=$REPLAY_TO ASK_TEXT=$REPLAY_TEXT ASK_SLA=$REPLAY_SLA
+          ASK_REPLY_FILE=$REPLAY_REPLY_FILE ASK_REPLY_BYTES=$REPLAY_REPLY_BYTES ASK_REPLY_SHA=$REPLAY_REPLY_SHA
+          ;;
+      esac
+    elif [[ $ASK_STATE == pending || $ASK_STATE == nudged1 || $ASK_STATE == nudged2 || $ASK_STATE == awaiting_human || $ASK_STATE == quarantined || $ASK_STATE == acked ]]; then
+      case $REPLAY_EVENT in
+        ack) ASK_STATE=acked ;;
+        nudge|awaiting_human|quarantine) [[ $ASK_STATE == acked ]] || ASK_STATE=$REPLAY_STATE ;;
+      esac
+    fi
+  done <"$LEDGER"
+}
+
+ask_metadata_matches() {
+  [[ $ASK_TO == "$EXPECT_TO" && $ASK_TEXT == "$EXPECT_TEXT" && $ASK_SLA == "$SLA" \
+     && $ASK_REPLY_FILE == "$REPLY_FILE" ]]
+}
+
+extract_json_string_field() {
+  local line=$1 key=$2 prefix rest value
+  prefix="\"$key\":\""
+  [[ $line == *$prefix* ]] || return 1
+  rest=${line##*"$prefix"}
+  value=${rest%%\"*}
+  printf -v "$3" '%s' "$value"
+}
+
+extract_json_raw_field() {
+  local line=$1 key=$2 prefix rest value
+  prefix="\"$key\":"
+  [[ $line == *$prefix* ]] || return 1
+  rest=${line##*"$prefix"}
+  value=${rest%%,*}
+  if [[ $value == "$rest" ]]; then
+    value=${rest%%\}*}
+  fi
+  printf -v "$3" '%s' "$value"
+}
+
+admission_replay_line() {
+  local line=$1 wanted=$2 id ts state event to text_value sla nudges schema reply_file reply_bytes reply_sha reply_sha_field
+  if [[ $line == *'"schema":"sitter.v0"'* && $line == *"\"expect_id\":\"$wanted\""* ]]; then
+    schema=sitter.v0
+  elif [[ $line == *'"schema":"sitter.v1"'* && $line == *"\"expect_id\":\"$wanted\""* ]]; then
+    schema=sitter.v1
+  else
+    return 0
+  fi
+  extract_json_string_field "$line" expect_id id || return 2
+  [[ $id == "$wanted" ]] || return 0
+  if ! valid_expect_id "$id"; then
+    [[ $schema == sitter.v1 ]] && return 2
+    return 0
+  fi
+  extract_json_string_field "$line" ts ts || return 2
+  extract_json_string_field "$line" event event || return 2
+  extract_json_string_field "$line" state state || return 2
+  [[ -n $ts && -n $state && -n $event ]] || return 2
+  if [[ $schema == sitter.v0 ]]; then
+    case $state in pending|nudged1|nudged2|awaiting_human|acked|quarantined) ;; *) return 2 ;; esac
+  else
+    case $state in pending|acked|prepared|send_failed) ;; *) return 2 ;; esac
+  fi
+  extract_json_string_field "$line" to to || return 2
+  extract_json_string_field "$line" text text_value || return 2
+  extract_json_raw_field "$line" sla_s sla || return 2
+  extract_json_raw_field "$line" nudges nudges || return 2
+  is_uint "$sla" && is_uint "$nudges" || return 2
+  reply_file='' reply_bytes=null reply_sha=null
+  if [[ $schema == sitter.v1 ]]; then
+    case "$event:$state" in
+      ask_prepare:prepared|expect:pending|ask_send_failed:send_failed|refused:acked) ;;
+      *) return 2 ;;
+    esac
+    extract_json_string_field "$line" reply_file reply_file || return 2
+    [[ -n $reply_file ]] && valid_reply_path "$reply_file" || return 2
+    extract_json_raw_field "$line" reply_bytes reply_bytes || return 2
+    [[ $reply_bytes == null ]] || is_uint "$reply_bytes" || return 2
+    extract_json_raw_field "$line" reply_sha256 reply_sha_field || return 2
+    if [[ $reply_sha_field == null ]]; then
+      reply_sha=null
+    else
+      [[ $reply_sha_field =~ ^\"[0-9a-f]{64}\"$ ]] || return 2
+      reply_sha=${reply_sha_field:1:${#reply_sha_field}-2}
+    fi
+    if [[ $reply_bytes == null && $reply_sha != null ]] || [[ $reply_bytes != null && $reply_sha == null ]]; then return 2; fi
+  fi
+  REPLAY_ID=$id REPLAY_TS=$ts REPLAY_EVENT=$event REPLAY_STATE=$state REPLAY_TO=$to REPLAY_TEXT=$text_value REPLAY_SLA=$sla
+  REPLAY_SCHEMA=$schema REPLAY_REPLY_FILE=$reply_file REPLAY_REPLY_BYTES=$reply_bytes REPLAY_REPLY_SHA=$reply_sha
+  return 1
+}
+
+ask_conflict_kind() {
+  local wanted=$1 line='' rc last_state=''
+  exec 8<"$LEDGER" || return 2
+  while IFS= read -r line <&8 || [[ -n $line ]]; do
+    if admission_replay_line "$line" "$wanted"; then rc=0; else rc=$?; fi
+    [[ $rc -eq 1 && $REPLAY_ID == "$wanted" ]] || continue
+    [[ $last_state == quarantined ]] && continue
+    case $REPLAY_EVENT in
+      expect) last_state=pending ;;
+      ask_prepare) [[ $REPLAY_SCHEMA != sitter.v1 ]] || last_state=prepared ;;
+      ask_send_failed) [[ $REPLAY_SCHEMA != sitter.v1 || $last_state != prepared ]] || last_state=send_failed ;;
+      refused)
+        if [[ $REPLAY_SCHEMA == sitter.v1 || -z $last_state || $last_state == acked ]]; then last_state=acked; fi
+        ;;
+      ack)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=acked ;; esac
+        fi
+        ;;
+      nudge|awaiting_human|quarantine)
+        if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then
+          case $last_state in pending|nudged1|nudged2|awaiting_human) last_state=$REPLAY_STATE ;; esac
+        fi
+        ;;
+    esac
+  done
+  exec 8<&-
+  case $last_state in
+    prepared|send_failed) ASK_CONFLICT_KIND=reserved; return 0 ;;
+    pending|nudged1|nudged2|awaiting_human) ASK_CONFLICT_KIND=active; return 0 ;;
+    quarantined) ASK_CONFLICT_KIND=quarantined; return 0 ;;
+  esac
+  return 1
+}
+
+ask_conflict_message() {
+  case $1 in
+    reserved) printf '%s' 'expect id is already reserved by an ask generation' ;;
+    active) printf '%s' 'expect id is already active' ;;
+    quarantined) printf '%s' 'expect id is permanently quarantined' ;;
+    *) printf '%s' 'expect id admission failed' ;;
+  esac
+}
+
+reserve_ask_prepare_locked() {
+  local record_file=$1 reserve_rc=0 record
+  validate_staged_ask_prepare "$record_file" || return 1
+  record=$STAGED_ASK_RECORD
+  with_ledger_lock "$0" __reserve_ask_prepare "$LEDGER" "$EXPECT_ID" "$record" || reserve_rc=$?
+  return "$reserve_rc"
+}
+
+validate_staged_ask_prepare() {
+  local record_file=$1 record='' rc
+  [[ -f $record_file && ! -L $record_file ]] || return 1
+  IFS= read -r record <"$record_file" || [[ -n $record ]] || return 1
+  if admission_replay_line "$record" "$EXPECT_ID"; then rc=0; else rc=$?; fi
+  [[ $rc -eq 1 && $REPLAY_SCHEMA == sitter.v1 && $REPLAY_EVENT == ask_prepare && $REPLAY_STATE == prepared \
+     && $REPLAY_ID == "$EXPECT_ID" ]] || return 1
+  STAGED_ASK_RECORD=$record
+}
+
+reserve_ask_prepare_inner() {
+  local record=$1 rc
+  [[ ! -L $LEDGER ]] || return 1
+  if admission_replay_line "$record" "$EXPECT_ID"; then rc=0; else rc=$?; fi
+  [[ $rc -eq 1 && $REPLAY_SCHEMA == sitter.v1 && $REPLAY_EVENT == ask_prepare && $REPLAY_STATE == prepared \
+     && $REPLAY_ID == "$EXPECT_ID" ]] || return 1
+  if ask_conflict_kind "$EXPECT_ID"; then rc=0; else rc=$?; fi
+  case $rc in
+    0)
+      case $ASK_CONFLICT_KIND in
+        reserved) return 3 ;;
+        active) return 4 ;;
+        quarantined) return 5 ;;
+      esac
+      ;;
+    1) ;;
+    *) return 1 ;;
+  esac
+  [[ ! -L $LEDGER ]] || return 1
+  printf '%s\n' "$record" >>"$LEDGER"
+}
+
+ask() {
+  local send_rc reserve_rc=0 record_file
+  [[ -n $LEDGER && -n $EXPECT_TO && -n $REPLY_FILE ]] || die '--ledger, --to, --sla, and --reply-file are required'
+  is_uint "$SLA" || die '--sla must be a non-negative integer'
+  SLA=$((10#$SLA))
+  valid_reply_path "$REPLY_FILE" || die '--reply-file must be an absolute path without control bytes, quote, or backslash'
+  EXPECT_TO=$(sanitize_expect_value "$EXPECT_TO")
+  EXPECT_TEXT=$(sanitize_expect_value "$EXPECT_TEXT")
+  EXPECT_TEXT=$(truncate_utf8 "$EXPECT_TEXT" 140)
+  [[ -n $EXPECT_TO ]] || die '--to must be nonempty'
+  if [[ -z $EXPECT_ID ]]; then EXPECT_ID="ask-$(date -u '+%Y%m%dT%H%M%SZ')-$$-1"; fi
+  valid_expect_id "$EXPECT_ID" || die '--id must match ^[A-Za-z0-9._-]{1,64}$'
+  if [[ $ASK_ALREADY_SENT == true ]]; then
+    [[ $COMMAND_SEPARATOR == false && ${#COMMAND[@]} -eq 0 ]] || die '--already-sent forbids -- and command argv'
+  else
+    [[ $COMMAND_SEPARATOR == true && ${#COMMAND[@]} -gt 0 ]] || die 'normal ask requires -- plus one command argv'
+  fi
+  init_ask_ledger || { printf 'sitter: cannot initialize ask ledger\n' >&2; return 1; }
+  detect_reply_hash_tool || return 1
+
+  if [[ $ASK_ALREADY_SENT == true ]]; then
+    ask_generation_state "$EXPECT_ID"
+    if [[ -z $ASK_STATE ]] && active_expect_id "$EXPECT_ID"; then
+      die 'cannot adopt an active or quarantined non-ask generation'
+    fi
+    case $ASK_STATE in
+      prepared|send_failed)
+        ask_metadata_matches || die 'adoption metadata conflicts with the reserved ask'
+        ;;
+      pending|nudged1|nudged2|awaiting_human)
+        ask_metadata_matches || die 'adoption metadata conflicts with the active ask'
+        printf '%s\n' "$EXPECT_ID"
+        return 0
+        ;;
+      acked|quarantined)
+        die 'cannot adopt an acked or quarantined ask'
+        ;;
+      '')
+        if ! observe_reply_file "$REPLY_FILE"; then
+          printf 'sitter: cannot observe reply file for adoption (%s)\n' "$OBS_KIND" >&2
+          return 1
+        fi
+        ASK_REPLY_BYTES=$OBS_BYTES ASK_REPLY_SHA=$OBS_SHA
+        printf 'sitter: warning: fresh adoption cannot detect pre-adoption replies\n' >&2
+        ;;
+      *) die 'cannot adopt ask in state '"$ASK_STATE" ;;
+    esac
+    if ! emit_ask_event expect pending "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 '' null \
+         "$REPLY_FILE" "$ASK_REPLY_BYTES" "$ASK_REPLY_SHA"; then
+      printf 'sitter: cannot append adopted active expect\n' >&2
+      return 1
+    fi
+    printf '%s\n' "$EXPECT_ID"
+    return 0
+  fi
+
+  if ask_conflict_kind "$EXPECT_ID"; then reserve_rc=0; else reserve_rc=$?; fi
+  case $reserve_rc in
+    0) die "$(ask_conflict_message "$ASK_CONFLICT_KIND")" ;;
+    1) ;;
+    *) printf 'sitter: cannot replay ledger for ask admission\n' >&2; return 1 ;;
+  esac
+  if ! observe_reply_file "$REPLY_FILE"; then
+    printf 'sitter: cannot observe reply file before send (%s)\n' "$OBS_KIND" >&2
+    return 1
+  fi
+  if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then
+    emit_ask_event refused acked "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 'kill switch present' null \
+      "$REPLY_FILE" "$OBS_BYTES" "$OBS_SHA" || return 1
+    return 0
+  fi
+  build_ask_event_record ask_prepare prepared "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 '' null \
+    "$REPLY_FILE" "$OBS_BYTES" "$OBS_SHA" || {
+    printf 'sitter: cannot build ask_prepare; send not started\n' >&2
+    return 1
+  }
+  record_file=$(mktemp "${LEDGER_DIR}/.sitter-ask-prepare.XXXXXX") || {
+    printf 'sitter: cannot stage ask_prepare; send not started\n' >&2
+    return 1
+  }
+  chmod 600 "$record_file" || { rm -f "$record_file"; printf 'sitter: cannot stage ask_prepare; send not started\n' >&2; return 1; }
+  printf '%s\n' "$ASK_EVENT_RECORD" >"$record_file" || { rm -f "$record_file"; printf 'sitter: cannot stage ask_prepare; send not started\n' >&2; return 1; }
+  if ( reserve_ask_prepare_locked "$record_file" ); then
+    reserve_rc=0
+  else
+    reserve_rc=$?
+  fi
+  rm -f "$record_file"
+  case $reserve_rc in
+    0) LAST_EVENT_ID=$ASK_EVENT_ID ;;
+    3|4|5)
+      ASK_CONFLICT_KIND=''
+      case $reserve_rc in
+        3) ASK_CONFLICT_KIND=reserved ;;
+        4) ASK_CONFLICT_KIND=active ;;
+        5) ASK_CONFLICT_KIND=quarantined ;;
+      esac
+      die "$(ask_conflict_message "$ASK_CONFLICT_KIND")"
+      ;;
+    *)
+      printf 'sitter: cannot append ask_prepare; send not started\n' >&2
+      return 1
+      ;;
+  esac
+  if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then
+    emit_ask_event refused acked "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 'kill switch present' null \
+      "$REPLY_FILE" "$OBS_BYTES" "$OBS_SHA" || return 1
+    return 0
+  fi
+
+  set +e
+  "${COMMAND[@]}"
+  send_rc=$?
+  set -e
+  if ((send_rc == 0)); then
+    if ! emit_ask_event expect pending "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 '' null \
+         "$REPLY_FILE" "$OBS_BYTES" "$OBS_SHA"; then
+      printf 'sitter: LIVE_UNWATCHED %s: send succeeded but active expect append failed; recover with --already-sent\n' "$EXPECT_ID" >&2
+      return 1
+    fi
+    printf '%s\n' "$EXPECT_ID"
+    return 0
+  fi
+  if ! emit_ask_event ask_send_failed send_failed "$EXPECT_ID" "$EXPECT_TO" "$EXPECT_TEXT" "$SLA" 0 \
+       'external send failed' "$send_rc" "$REPLY_FILE" "$OBS_BYTES" "$OBS_SHA"; then
+    printf 'sitter: ask_send_failed append failed after external send exit %s; prepared state remains\n' "$send_rc" >&2
+  fi
+  return "$send_rc"
+}
+
+watch() {
+  local stage replay line rc final_rc=0 current_id current_state baseline_bytes baseline_sha current_path
+  [[ -n $LEDGER && $SWEEP_ONCE == true ]] || die '--once and --ledger are required'
+  [[ ${#COMMAND[@]} -eq 0 ]] || die 'watch does not accept command argv'
+  [[ -z $EXPECT_ID ]] || valid_expect_id "$EXPECT_ID" || die '--id must match ^[A-Za-z0-9._-]{1,64}$'
+  umask 077
+  LEDGER_DIR=$(dirname "$LEDGER")
+  mkdir -p "$LEDGER_DIR" "$SITTER_HOME" || return 1
+  chmod 700 "$SITTER_HOME" || return 1
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  : >>"$LEDGER" || return 1
+  chmod 600 "$LEDGER" || return 1
+  detect_stat_mtime
+  detect_reply_hash_tool || return 1
+  detect_event_clock
+  detect_iconv
+  [[ -e $KILL_FILE || -L $KILL_FILE ]] && return 0
+  stage=$(mktemp "$SITTER_HOME/.sitter-watch.XXXXXX") || return 1
+  copy_ledger_locked "$stage" || { rm -f "$stage"; return 1; }
+  replay=$(mktemp "$SITTER_HOME/.sitter-watch-replay.XXXXXX") || { rm -f "$stage"; return 1; }
+  while IFS= read -r line || [[ -n $line ]]; do
+    if expect_replay_line "$line"; then rc=0; else rc=$?; fi
+    [[ $rc -eq 1 ]] || continue
+    printf '%s\034%s\034%s\034%s\034%s\034%s\034%s\n' "$REPLAY_ID" "$REPLAY_SCHEMA" "$REPLAY_EVENT" \
+      "$REPLAY_STATE" "$REPLAY_REPLY_FILE" "$REPLAY_REPLY_BYTES" "$REPLAY_REPLY_SHA" >>"$replay"
+  done <"$stage"
+  rm -f "$stage"
+  awk -F '\034' 'BEGIN { OFS="\034" }
+    {
+      id=$1; schema=$2; event=$3
+      if (schema == "sitter.v1" && event == "expect") {
+        state[id]="pending"; path[id]=$5; bytes[id]=$6; sha[id]=$7; order[id]=NR
+      } else if (schema == "sitter.v0" && state[id] != "") {
+        if (event == "ack") state[id]="acked"
+        else if (state[id] != "acked" && (event == "nudge" || event == "awaiting_human" || event == "quarantine")) state[id]=$4
+        order[id]=NR
+      }
+    }
+    END { for (id in state) print order[id], id, state[id], path[id], bytes[id], sha[id] }' "$replay" |
+    sort -n | cut -d $'\034' -f2- >"${replay}.last"
+  rm -f "$replay"
+  while IFS=$'\034' read -r current_id current_state current_path baseline_bytes baseline_sha; do
+    case $current_state in pending|nudged1|nudged2|awaiting_human) ;; *) continue ;; esac
+    [[ -z $EXPECT_ID || $EXPECT_ID == "$current_id" ]] || continue
+    if ! observe_reply_file "$current_path"; then
+      printf 'sitter: watch %s: reply file observation failed (%s)\n' "$current_id" "$OBS_KIND" >&2
+      final_rc=1
+      continue
+    fi
+    if [[ $baseline_bytes == null ]]; then
+      [[ $OBS_BYTES != null && $OBS_BYTES -gt 0 ]] || continue
+    else
+      if [[ $OBS_BYTES == null ]]; then
+        printf 'sitter: watch %s: reply file disappeared; leaving pending\n' "$current_id" >&2
+        continue
+      elif ((OBS_BYTES < baseline_bytes)); then
+        printf 'sitter: watch %s: reply file truncated; leaving pending\n' "$current_id" >&2
+        continue
+      elif ((OBS_BYTES == baseline_bytes)) && [[ $OBS_SHA == "$baseline_sha" ]]; then
+        continue
+      fi
+    fi
+    if ack_transition "$current_id" ''; then
+      printf 'acked %s\n' "$current_id"
+    else
+      printf 'sitter: watch %s: ack append failed\n' "$current_id" >&2
+      final_rc=1
+    fi
+  done <"${replay}.last"
+  rm -f "${replay}.last"
+  return "$final_rc"
+}
+
+sweep_locked() {
+  local stage replay line rc key epoch now next_state event reason current_nudges hook_code
+  if [[ -n ${SWEEP_LOCKDIR:-} ]]; then touch -c -- "$SWEEP_LOCKDIR" 2>/dev/null || true; fi
+  [[ -e $KILL_FILE || -L $KILL_FILE ]] && return 0
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  : >>"$LEDGER"; chmod 600 "$LEDGER"
+  stage=$(mktemp "$SITTER_HOME/.sitter-sweep.XXXXXX") || die 'cannot stage ledger'
+  copy_ledger_locked "$stage"; chmod 600 "$stage"
+  replay=$(mktemp "$SITTER_HOME/.sitter-replay.XXXXXX") || die 'cannot stage replay'
+  while IFS= read -r line || [[ -n $line ]]; do
+    if expect_replay_line "$line"; then rc=0; else rc=$?; fi
+    if [[ $rc -eq 2 ]]; then
+      record_poison "$line"; continue
+    fi
+    [[ $rc -eq 1 ]] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$REPLAY_ID" "$REPLAY_EVENT" "$REPLAY_STATE" "$REPLAY_TS" "$REPLAY_TO" "$REPLAY_TEXT" "$REPLAY_SLA" "$REPLAY_SCHEMA" >>"$replay"
+  done <"$stage"
+  rm -f "$stage"
+  # Replay uses generations: expect starts one, ack absorbs all later nudges,
+  # and quarantine permanently burns an id.
+  awk -F '\t' 'BEGIN { OFS="\034" }
+    {
+      id=$1; event=$2; incoming=$3; schema=$8
+      if (state[id] == "quarantined") next
+      if (event == "expect") {
+        state[id]="pending"; ts[id]=$4; to[id]=$5; text[id]=$6; sla[id]=$7; order[id]=NR
+      } else if (schema == "sitter.v0" && state[id] != "") {
+        if (event == "ack") state[id]="acked"
+        else if (event != "refused" && state[id] != "acked") state[id]=incoming
+        if (state[id] == "quarantined") quarantined[id]=1
+        order[id]=NR
+      }
+    }
+    END { for (id in state) print order[id], id, state[id], ts[id], to[id], text[id], sla[id] }' "$replay" | sort -n | cut -d $'\034' -f2- >"${replay}.last"
+  rm -f "$replay"; now=$(now_epoch)
+  while IFS=$'\034' read -r key current_state current_ts current_to current_text current_sla; do
+    if [[ -n ${SWEEP_LOCKDIR:-} ]]; then touch -c -- "$SWEEP_LOCKDIR" 2>/dev/null || true; fi
+    case $current_state in pending) next_state=nudged1; event=nudge; reason=sla_breach; current_nudges=1 ;; nudged1) next_state=nudged2; event=nudge; reason=sla_breach; current_nudges=2 ;; nudged2) next_state=awaiting_human; event=awaiting_human; reason=awaiting_human; current_nudges=2 ;; *) continue ;; esac
+    epoch=$(timestamp_epoch "$current_ts") || continue
+    ((now - epoch >= current_sla)) || continue
+    [[ $(live_expect_state "$key") == "$current_state" ]] || continue
+    # Append first under the sweep lock.  A crash before this hook can lose a
+    # call, but replay makes a duplicate state transition impossible.
+    emit_expect_event "$event" "$next_state" "$key" "$current_to" "$current_text" "$current_sla" "$current_nudges" ''
+    hook_code=$(hook_for_expect "$event" "$reason" "$LAST_EVENT_ID" "$key" "$current_text")
+    if [[ $hook_code != 0 ]]; then record_hook_failure "$key"; fi
+  done <"${replay}.last"
+  rm -f "${replay}.last"
+}
+
+sweep() {
+  [[ -n $LEDGER && -n $ON_FAIL && $SWEEP_ONCE == true ]] || die '--once, --ledger, and --on-fail are required'
+  umask 077; LEDGER_DIR=$(dirname "$LEDGER"); mkdir -p "$LEDGER_DIR" "$SITTER_HOME"; chmod 700 "$SITTER_HOME"
+  detect_stat_mtime; detect_hash_tool; detect_event_clock; detect_iconv; FAILCOUNTS="$SITTER_HOME/failcounts"; QUARANTINED="$SITTER_HOME/quarantined"; SWEEP_LOCK="$SITTER_HOME/sweep.lock"
+  [[ -e $KILL_FILE || -L $KILL_FILE ]] && return 0
+  if [[ ${SITTER_SWEEP_LOCKED:-} == true ]]; then
+    sweep_locked
+  elif command -v flock >/dev/null 2>&1; then
+    # shellcheck disable=SC3045 # bash supports named file descriptors
+    exec 9>"$SWEEP_LOCK"
+    flock -n 9 || return 0
+    sweep_locked
+    flock -u 9; exec 9>&-
+  elif command -v lockf >/dev/null 2>&1 && [[ ${SITTER_SWEEP_LOCKED:-} != true ]]; then
+    # lockf holds a lock only for an executed child, so re-enter this verb with
+    # a private marker.  A zero timeout makes overlap a normal no-op.
+    set +e
+    SITTER_SWEEP_LOCKED=true SITTER_HOME="$SITTER_HOME" lockf -t 0 "$SWEEP_LOCK" "$0" sweep --once \
+      --ledger "$LEDGER" --on-fail "$ON_FAIL" --kill-file "$KILL_FILE" --project "$PROJECT" --agent "$AGENT" --task "$TASK"
+    local lock_rc=$?
+    set -e
+    ((lock_rc == 0 || lock_rc == 75)) && return 0
+    return "$lock_rc"
+  else
+    local lockdir="${SWEEP_LOCK}.d" mtime age sweep_lock_started my_tok owner_tok stale_lockdir
+    if ! mkdir "$lockdir" 2>/dev/null; then
+      if mtime=$(file_mtime "$lockdir") && is_uint "$mtime"; then
+        age=$(( $(now_epoch) - mtime ))
+        if ((age > 300)); then
+          stale_lockdir="${lockdir}.stale.$$.$RANDOM"
+          mv -- "$lockdir" "$stale_lockdir" 2>/dev/null || true
+          rm -rf -- "$stale_lockdir" 2>/dev/null || true
+        else
+          return 0
+        fi
+      else
+        return 0
+      fi
+      mkdir "$lockdir" 2>/dev/null || return 0
+    fi
+    sweep_lock_started=$(now_epoch)
+    my_tok="$$-$sweep_lock_started-$RANDOM"
+    printf '%s' "$my_tok" 2>/dev/null >"$lockdir/owner" || true
+    SWEEP_LOCKDIR="$lockdir"
+    sweep_locked
+    owner_tok=''
+    read -r owner_tok 2>/dev/null <"$lockdir/owner" || [[ -n $owner_tok ]] || owner_tok=''
+    if [[ -n $owner_tok && $owner_tok == "$my_tok" ]]; then
+      rm -f 2>/dev/null -- "$lockdir/owner" || true
+      rmdir -- "$lockdir" 2>/dev/null || true
+    fi
+  fi
+}
+
+ # The denylist is a best-effort ACCIDENT guard, not a security boundary. It
+ # unwraps env/nice/nohup/timeout/stdbuf/caffeinate launcher prefixes and
+ # checks substrings in sh -c, bash -c, zsh -c, and dash -c strings. Copied or
+ # renamed binaries and exotic wrappers are explicitly out of scope.
+denylisted_policy() {
+  local executable token saw_pr=false
+  (($#)) || return 1
+  executable=${1##*/}; shift
+  case $executable in
+    *billing*|*charge*|*payment*|mkfs*|shutdown|reboot) return 0 ;;
+  esac
+  for token in "$@"; do
+    [[ $executable == dd && $token == of=* ]] && return 0
+    case $executable:$token in
+      git:push|gh:release|kubectl:apply|kubectl:delete|terraform:apply|terraform:destroy|helm:install|helm:upgrade|docker:push|npm:publish|pnpm:publish|yarn:publish|twine:upload|fly:deploy|vercel:deploy|vercel:--prod) return 0 ;;
+      gh:pr) saw_pr=true ;;
+      gh:merge) [[ $saw_pr == true ]] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+denylisted_shell_string() {
+  local executable command_string index tok
+  local -a argv=("$@")
+
+  ((${#argv[@]})) || return 1
+  executable=${argv[0]##*/}
+  case $executable in
+    sh|bash|zsh|dash) ;;
+    *) return 1 ;;
+  esac
+
+  for ((index = 1; index + 1 < ${#argv[@]}; index++)); do
+    tok=${argv[index]}
+    # Bundled short-flag forms (sh -lc, bash -ec, zsh -ic, -xc, ...) still
+    # execute the following string as a -c command; treat any bare -flags
+    # token containing "c" as a -c form. Over-matching odd bundles is
+    # acceptable (fail-closed per the accident-guard contract).
+    [[ $tok =~ ^-[A-Za-z]+$ && $tok == *c* ]] || continue
+    command_string=${argv[index + 1]}
+    case $command_string in
+      *'git push'*|*'gh release'*|*'kubectl apply'*|*'kubectl delete'*|*'terraform apply'*|*'terraform destroy'*|*'helm install'*|*'helm upgrade'*|*'docker push'*|*'pnpm publish'*|*'npm publish'*|*'yarn publish'*|*'twine upload'*|*'fly deploy'*|*'vercel deploy'*|*'vercel --prod'*|*mkfs*|*shutdown*|*reboot*) return 0 ;;
+    esac
+    [[ $command_string == *'gh pr'* && $command_string == *merge* ]] && return 0
+  done
+  return 1
+}
+
+denylisted() {
+  local executable tok index layer unwrap_failed=false
+  local -a argv
+
+  denylisted_shell_string "${COMMAND[@]}" && return 0
+
+  argv=("${COMMAND[@]}")
+  for ((layer = 0; layer < 8; layer++)); do
+    ((${#argv[@]})) || break
+    executable=${argv[0]##*/}
+    case $executable in
+      env)
+        index=1
+        while ((index < ${#argv[@]})); do
+          tok=${argv[index]}
+          if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            index=$((index + 1))
+            continue
+          fi
+          case $tok in
+            -i|--) index=$((index + 1)) ;;
+            -u)
+              if ((index + 1 >= ${#argv[@]})); then unwrap_failed=true; break; fi
+              index=$((index + 2))
+              ;;
+            -*) unwrap_failed=true; break ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      nice)
+        index=1
+        while ((index < ${#argv[@]})) && [[ ${argv[index]} == -* ]]; do
+          tok=${argv[index]}
+          case $tok in
+            -n)
+              if ((index + 1 >= ${#argv[@]})); then unwrap_failed=true; break; fi
+              index=$((index + 2))
+              ;;
+            -[0-9]*) index=$((index + 1)) ;;
+            *) unwrap_failed=true; break ;;
+          esac
+        done
+        ;;
+      nohup)
+        index=1
+        ((index < ${#argv[@]})) && [[ ${argv[index]} == -- ]] && index=$((index + 1))
+        ;;
+      timeout)
+        index=1
+        while ((index < ${#argv[@]})) && [[ ${argv[index]} == -* ]]; do
+          tok=${argv[index]}
+          case $tok in
+            -k|--kill-after|-s|--signal)
+              if ((index + 1 >= ${#argv[@]})); then unwrap_failed=true; break; fi
+              index=$((index + 2))
+              ;;
+            *) index=$((index + 1)) ;;
+          esac
+        done
+        if [[ $unwrap_failed == false ]]; then
+          if ((index >= ${#argv[@]})) || [[ ! ${argv[index]} =~ ^[0-9]+[smhd]?$ ]]; then
+            unwrap_failed=true
+          else
+            index=$((index + 1))
+          fi
+        fi
+        ;;
+      stdbuf)
+        index=1
+        while ((index < ${#argv[@]})) && [[ ${argv[index]} == -* ]]; do
+          tok=${argv[index]}
+          case $tok in
+            -i|-o|-e)
+              if ((index + 1 >= ${#argv[@]})); then unwrap_failed=true; break; fi
+              index=$((index + 2))
+              ;;
+            -i?*|-o?*|-e?*) index=$((index + 1)) ;;
+            *) unwrap_failed=true; break ;;
+          esac
+        done
+        ;;
+      caffeinate)
+        index=1
+        while ((index < ${#argv[@]})) && [[ ${argv[index]} == -* ]]; do
+          tok=${argv[index]}
+          case $tok in
+            -t)
+              if ((index + 1 >= ${#argv[@]})); then unwrap_failed=true; break; fi
+              index=$((index + 2))
+              ;;
+            -d|-i|-m|-s|-u) index=$((index + 1)) ;;
+            *) unwrap_failed=true; break ;;
+          esac
+        done
+        ;;
+      *) break ;;
+    esac
+    if [[ $unwrap_failed == true ]]; then argv=("${COMMAND[@]}"); break; fi
+    argv=("${argv[@]:index}")
+  done
+
+  # Residue that still looks like an option (e.g. a second launcher's
+  # unconsumed flag left behind as the would-be executable) is unrecognized
+  # syntax, not a real command: fail closed onto the original command rather
+  # than evaluating policy against a garbage argv[0].
+  if [[ $unwrap_failed == false && ${#argv[@]} -gt 0 && ${argv[0]} == -* ]]; then
+    unwrap_failed=true
+    argv=("${COMMAND[@]}")
+  fi
+
+  if ((layer == 8 && ${#argv[@]})); then
+    executable=${argv[0]##*/}
+    case $executable in
+      env|nice|nohup|timeout|stdbuf|caffeinate)
+        unwrap_failed=true
+        argv=("${COMMAND[@]}")
+        ;;
+    esac
+  fi
+
+  denylisted_shell_string "${argv[@]}" && return 0
+  [[ $unwrap_failed == true ]] && return 0
+  denylisted_policy "${argv[@]}"
+}
+
+allowlisted() {
+  local line trimmed
+  [[ -n $IDEMPOTENT_NAME && -n $ALLOWLIST && -f $ALLOWLIST ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    trimmed=$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z $trimmed || ${trimmed#\#} != "$trimmed" ]] && continue
+    [[ $trimmed == "$COMMAND_DISPLAY" ]] && return 0
+  done <"$ALLOWLIST"
+  return 1
+}
+
+command_hash() { printf '%s\0' "${COMMAND[@]}" | hash256_stdin; }
+
+read_cooldown() {
+  # Retry budget is per-invocation; disk carries only the backoff timestamp, with its vestigial first field ignored for old two-field files.
+  local _unused
+  COOLDOWN_USED=0; COOLDOWN_NEXT=0
+  [[ -f $COOLDOWN_FILE ]] || return 0
+  IFS=' ' read -r _unused COOLDOWN_NEXT <"$COOLDOWN_FILE" || true
+  is_uint "$COOLDOWN_NEXT" || COOLDOWN_NEXT=0
+}
+
+# Retry budget is per-invocation; disk carries only the backoff timestamp, with its vestigial first field retained for old two-field files.
+write_cooldown() {
+  # Concurrent same-argv runs may race last-writer-wins without flock; the timestamp is only a monotonic backoff hint, not a correctness counter.
+  printf '%s %s\n' 0 "$COOLDOWN_NEXT" >"$COOLDOWN_FILE"
+  chmod 600 "$COOLDOWN_FILE"
+}
+
+kill_group() {
+  local child_pgid supervisor_pgid
+  child_pgid=$(ps -o pgid= -p "$CHILD_PID" 2>/dev/null | tr -d ' ' || true)
+  # This lookup and comparison must precede every group signal: a child in the
+  # supervisor's group would otherwise terminate the supervisor as well.
+  supervisor_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ' || true)
+  # An empty supervisor pgid means ps did not verify the comparison; it must
+  # never be treated as safely different from the child's isolated group.
+  if [[ $CHILD_SETSID == true && -n $supervisor_pgid && $child_pgid == "$CHILD_PID" && $child_pgid != "$supervisor_pgid" ]]; then
+    kill -TERM -- "-$CHILD_PID" 2>/dev/null || true
+    sleep "$GRACE"
+    if kill -0 -- "-$CHILD_PID" 2>/dev/null; then
+      kill -KILL -- "-$CHILD_PID" 2>/dev/null || true
+    fi
+    return
+  fi
+
+  # Perl or ps may be unavailable, and a shared pgid is unsafe to signal as a
+  # group.  Keep the direct-child path as the best-effort fallback tier.
+  kill -TERM "$CHILD_PID" 2>/dev/null || true
+  sleep "$GRACE"
+  if kill -0 "$CHILD_PID" 2>/dev/null; then
+    kill -KILL "$CHILD_PID" 2>/dev/null || true
+  fi
+}
+
+# Cooldown sleeps must observe the kill switch with bounded latency (#21).
+# This only wakes early; emission stays with the existing bracketing checks.
+sleep_watching_kill() {
+  local total=$1 deadline remaining slice
+  deadline=$(( $(now_epoch) + total ))
+  while :; do
+    [[ -e $KILL_FILE || -L $KILL_FILE ]] && return 0
+    remaining=$(( deadline - $(now_epoch) ))
+    ((remaining > 0)) || return 0
+    slice=$POLL_INTERVAL
+    ((remaining < slice)) && slice=$remaining
+    ((slice > 0)) || slice=1
+    sleep "$slice"
+  done
+}
+
+launch_attempt() {
+  local started now mtime age child_state remaining sleep_for
+  mkdir -p "$(dirname "$LOG_PATH")"; chmod 700 "$(dirname "$LOG_PATH")"
+  : >>"$LOG_PATH"
+  touch -- "$LOG_PATH" 2>/dev/null || true
+  CHILD_SETSID=false
+  if command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX=setsid,_exit -e 'setsid() or _exit(127); exec { $ARGV[0] } @ARGV or _exit(127)' -- "${COMMAND[@]}" >>"$LOG_PATH" 2>&1 &
+    CHILD_SETSID=true
+  else
+    # Best-effort fallback: without perl, retain the direct-child launch tier.
+    ( exec "${COMMAND[@]}" ) >>"$LOG_PATH" 2>&1 &
+  fi
+  CHILD_PID=$!
+  started=$(now_epoch)
+  while kill -0 "$CHILD_PID" 2>/dev/null; do
+    remaining=$((TIMEOUT - ($(now_epoch) - started)))
+    sleep_for=$POLL_INTERVAL
+    ((remaining < sleep_for)) && sleep_for=$remaining
+    ((sleep_for > 0)) || sleep_for=1
+    sleep "$sleep_for"
+    kill -0 "$CHILD_PID" 2>/dev/null || break
+    child_state=$(ps -o stat= -p "$CHILD_PID" 2>/dev/null | tr -d ' ' || true)
+    [[ $child_state == Z* ]] && break
+    now=$(now_epoch)
+    # A symlinked kill switch is also a stop request: it can only fail closed.
+    if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then
+      kill_group
+      wait "$CHILD_PID" 2>/dev/null || true
+      ATTEMPT_EXIT=1; ATTEMPT_REASON=killed
+      return 1
+    fi
+    if ((now - started >= TIMEOUT)); then
+      emit_event stall killed "$ATTEMPT" 'timeout exceeded' null timeout
+      kill_group; wait "$CHILD_PID" 2>/dev/null || true
+      ATTEMPT_EXIT=1; ATTEMPT_REASON=timeout
+      return 1
+    fi
+    if ((STALL_AFTER > 0)); then
+      # A stat failure is transient infrastructure uncertainty, not a stale log.
+      if mtime=$(file_mtime "$LOG_PATH") && is_uint "$mtime"; then
+        age=$((now - mtime))
+        if ((age >= STALL_AFTER)); then
+          emit_event stall killed "$ATTEMPT" "pid alive, log mtime frozen ${age}s" null stall
+          kill_group; wait "$CHILD_PID" 2>/dev/null || true
+          ATTEMPT_EXIT=1; ATTEMPT_REASON=stall
+          return 1
+        fi
+      fi
+    fi
+  done
+  set +e; wait "$CHILD_PID"; ATTEMPT_EXIT=$?; set -e
+  if ((ATTEMPT_EXIT == 0)); then ATTEMPT_REASON=success; return 0; fi
+  ATTEMPT_REASON='exit'
+  return 1
+}
+
+run() {
+  local remaining
+  [[ -n $LEDGER ]] || die '--ledger is required'
+  [[ -n $ON_FAIL ]] || die '--on-fail is required'
+  ((${#COMMAND[@]})) || die 'wrapped command is required after --'
+  is_uint "$STALL_AFTER" || die '--stall-after must be a non-negative integer'
+  STALL_AFTER=$((10#$STALL_AFTER))
+  is_uint "$TIMEOUT" || die '--timeout must be a positive integer'; TIMEOUT=$((10#$TIMEOUT))
+  if ((TIMEOUT <= 0)); then die '--timeout must be a positive integer'; fi
+  is_uint "$GRACE" || die '--grace must be a non-negative integer'; GRACE=$((10#$GRACE))
+  if ((GRACE < 0)); then die '--grace must be a non-negative integer'; fi
+  is_uint "$RETRIES" || die '--retries must be 0..10'; RETRIES=$((10#$RETRIES))
+  if ((RETRIES > 10)); then die '--retries must be 0..10'; fi
+  is_uint "$COOLDOWN" || die '--cooldown must be at least 5'; COOLDOWN=$((10#$COOLDOWN))
+  if ((COOLDOWN < 5)); then die '--cooldown must be at least 5'; fi
+  ((STALL_AFTER != 0)) || [[ $TIMEOUT_EXPLICIT == true ]] || die '--stall-after 0 requires explicit --timeout'
+  if [[ -n $IDEMPOTENT_NAME && -z $ALLOWLIST ]] || [[ -z $IDEMPOTENT_NAME && -n $ALLOWLIST ]]; then die '--idempotent and --allowlist must be supplied together'; fi
+  IDEMPOTENT_BOOL=false
+  umask 077
+  LEDGER_DIR=$(dirname "$LEDGER"); mkdir -p "$LEDGER_DIR" "$SITTER_HOME/cooldown"; chmod 700 "$SITTER_HOME" "$SITTER_HOME/cooldown"
+  [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
+  [[ ! -L ${LEDGER}.lock ]] || die 'ledger lock must not be a symlink'
+  detect_stat_mtime
+  detect_hash_tool
+  detect_event_clock
+  detect_iconv
+  : >>"$LEDGER"; chmod 600 "$LEDGER"
+  RUN_ID="sitter-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+  [[ -n $LOG_PATH ]] || LOG_PATH="$SITTER_HOME/logs/${RUN_ID}.log"
+  # Unlike ledger paths, a kill switch is read-only control data; a symlink is
+  # deliberately treated as present so it cannot redirect writes or fail open.
+  if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then emit_event refused killed 0 'kill switch present before launch' null killed; exit 0; fi
+  if denylisted; then emit_event refused refused 0 'wrapped command denied by safety policy' null denied denied; exit 2; fi
+  HASH=$(command_hash); COOLDOWN_FILE="$SITTER_HOME/cooldown/$HASH"; read_cooldown
+  if ((COOLDOWN_NEXT > $(now_epoch))); then
+    remaining=$((COOLDOWN_NEXT - $(now_epoch)))
+    ((remaining > 3600)) && remaining=3600
+    sleep_watching_kill "$remaining"
+  fi
+  COMMAND_DISPLAY=$(IFS=' '; printf '%s' "${COMMAND[*]}")
+  IDEMPOTENT_BOOL=false; allowlisted && IDEMPOTENT_BOOL=true
+  ATTEMPT=0
+  while :; do
+    if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then emit_event end killed "$ATTEMPT" 'kill switch present before launch' null killed; exit 0; fi
+    ATTEMPT=$((ATTEMPT + 1))
+    emit_event start running "$ATTEMPT" 'attempt started' null ''
+    if launch_attempt; then
+      emit_event end success "$ATTEMPT" 'child completed successfully' 0 success
+      rm -f "$COOLDOWN_FILE"
+      exit 0
+    fi
+    emit_event fail failed "$ATTEMPT" "attempt failed: $ATTEMPT_REASON" "$ATTEMPT_EXIT" "$ATTEMPT_REASON"
+    if [[ $ATTEMPT_REASON == killed ]]; then emit_event end killed "$ATTEMPT" 'kill switch stopped supervision' "$ATTEMPT_EXIT" killed; exit 0; fi
+    if [[ $IDEMPOTENT_BOOL != true ]]; then emit_event end failed "$ATTEMPT" 'non-idempotent command will not restart' "$ATTEMPT_EXIT" "$ATTEMPT_REASON" "$ATTEMPT_REASON"; exit "$ATTEMPT_EXIT"; fi
+    if ((COOLDOWN_USED >= RETRIES)); then emit_event end budget_exhausted "$ATTEMPT" 'retry budget exhausted; --on-fail invoked' "$ATTEMPT_EXIT" budget_exhausted budget_exhausted; exit "$ATTEMPT_EXIT"; fi
+    COOLDOWN_USED=$((COOLDOWN_USED + 1))
+    delay=$((COOLDOWN * (2 ** (ATTEMPT - 1)))); ((delay > 3600)) && delay=3600
+    COOLDOWN_NEXT=$(( $(now_epoch) + delay )); write_cooldown
+    emit_event restart running "$((ATTEMPT + 1))" 'restart scheduled' null "$ATTEMPT_REASON"
+    [[ -e $KILL_FILE || -L $KILL_FILE ]] && { emit_event end killed "$ATTEMPT" 'kill switch stopped before restart' null killed; exit 0; }
+    sleep_watching_kill "$delay"
+  done
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+VERB=$1; shift
+case $VERB in
+  expect|ack|sweep|run|ask|watch|__reserve_ask_prepare) ;;
+  *) usage; exit 2 ;;
+esac
+
+SITTER_HOME=${SITTER_HOME:-"$HOME/.sitter"}
+LEDGER='' ON_FAIL='' LOG_PATH='' PROJECT='' AGENT='' TASK='' SESSION_ID='' IDEMPOTENT_NAME='' ALLOWLIST=''
+STALL_AFTER=${SITTER_STALL_AFTER:-900}; TIMEOUT=${SITTER_TIMEOUT:-14400}; RETRIES=${SITTER_RETRIES:-3}; COOLDOWN=${SITTER_COOLDOWN:-60}; GRACE=10
+KILL_FILE=${SITTER_KILL_FILE:-"$SITTER_HOME/STOP"}; TIMEOUT_EXPLICIT=false; [[ ${SITTER_TIMEOUT+x} ]] && TIMEOUT_EXPLICIT=true
+COMMAND=(); EVENT_SEQUENCE=0; EVENT_CLOCK_NANO=false; STAT_MTIME_STYLE=''; COMMAND_DISPLAY=''; WORK_CWD=$PWD; CHILD_PID=''; CHILD_SETSID=false
+EXPECT_ID='' EXPECT_TO='' EXPECT_TEXT='' SLA=86400 ACK_DETAIL='' SWEEP_ONCE=false LAST_EVENT_ID=''
+ASK_EVENT_ID='' ASK_EVENT_RECORD=''
+REPLY_FILE='' ASK_ALREADY_SENT=false COMMAND_SEPARATOR=false ID_SET=false SLA_SET=false TO_SET=false REPLY_FILE_SET=false
+ON_FAIL_SET=false SEEN_OPTIONS=''
+HOOK_TIMEOUT=${SITTER_HOOK_TIMEOUT:-30}
+HOOK_KILL_GRACE=${SITTER_HOOK_KILL_GRACE:-5}
+POLL_INTERVAL=${SITTER_POLL_INTERVAL:-15}
+if [[ $VERB == __reserve_ask_prepare ]]; then
+  (($# == 3)) || exit 2
+  LEDGER=$1; EXPECT_ID=$2; STAGED_ASK_RECORD=$3
+  [[ -n $LEDGER && -f $LEDGER && ! -L $LEDGER ]] || exit 2
+  valid_expect_id "$EXPECT_ID" || exit 2
+  reserve_ask_prepare_inner "$STAGED_ASK_RECORD"
+  exit $?
+fi
+while (($#)); do
+  case $1 in
+    --ledger|--on-fail|--log|--stall-after|--timeout|--grace|--idempotent|--allowlist|--retries|--cooldown|--kill-file|--project|--agent|--task|--session-id|--id|--sla|--to|--text|--detail|--reply-file)
+      (($# >= 2)) || die "$1 requires a value"; key=$1; value=$2; shift 2
+      SEEN_OPTIONS="$SEEN_OPTIONS $key"
+      case $key in
+        --ledger) LEDGER=$value ;; --on-fail) ON_FAIL=$value; ON_FAIL_SET=true ;; --log) LOG_PATH=$value ;; --stall-after) STALL_AFTER=$value ;; --timeout) TIMEOUT=$value; TIMEOUT_EXPLICIT=true ;;
+        --grace) GRACE=$value ;; --idempotent) IDEMPOTENT_NAME=$value ;; --allowlist) ALLOWLIST=$value ;; --retries) RETRIES=$value ;; --cooldown) COOLDOWN=$value ;; --kill-file) KILL_FILE=$value ;;
+        --project) PROJECT=$value ;; --agent) AGENT=$value ;; --task) TASK=$value ;; --session-id) SESSION_ID=$value ;;
+        --id) EXPECT_ID=$value; ID_SET=true ;; --sla) SLA=$value; SLA_SET=true ;; --to) EXPECT_TO=$value; TO_SET=true ;; --text) EXPECT_TEXT=$value ;; --detail) ACK_DETAIL=$value ;;
+        --reply-file) REPLY_FILE=$value; REPLY_FILE_SET=true ;;
+      esac
+      ;;
+    --once) SWEEP_ONCE=true; SEEN_OPTIONS="$SEEN_OPTIONS --once"; shift ;;
+    --already-sent) ASK_ALREADY_SENT=true; SEEN_OPTIONS="$SEEN_OPTIONS --already-sent"; shift ;;
+    --) shift; COMMAND_SEPARATOR=true; COMMAND=("$@"); break ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+if [[ $ID_SET == true && -z $EXPECT_ID ]]; then die '--id must be nonempty'; fi
+case $VERB in
+  ask)
+    [[ $SLA_SET == true && $TO_SET == true && $REPLY_FILE_SET == true ]] || die '--ledger, --to, --sla, and --reply-file are required'
+    [[ $ON_FAIL_SET == false && $SWEEP_ONCE == false ]] || die 'ask does not accept --on-fail or --once'
+    case " $SEEN_OPTIONS " in
+      *" --log "*|*" --stall-after "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
+        die 'ask received an option outside its contract'
+        ;;
+    esac
+    ;;
+  watch)
+    [[ $ON_FAIL_SET == false && $ASK_ALREADY_SENT == false ]] || die 'watch does not accept --on-fail or --already-sent'
+    case " $SEEN_OPTIONS " in
+      *" --reply-file "*|*" --to "*|*" --sla "*|*" --text "*|*" --log "*|*" --stall-after "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
+        die 'watch received an option outside its contract'
+        ;;
+    esac
+    ;;
+  run|expect|ack|sweep)
+    [[ $REPLY_FILE_SET == false && $ASK_ALREADY_SENT == false ]] || die "$VERB does not accept --reply-file or --already-sent"
+    ;;
+esac
+
+is_uint "$HOOK_TIMEOUT" || die 'SITTER_HOOK_TIMEOUT must be a positive integer'; HOOK_TIMEOUT=$((10#$HOOK_TIMEOUT))
+if ((HOOK_TIMEOUT <= 0)); then die 'SITTER_HOOK_TIMEOUT must be a positive integer'; fi
+is_uint "$HOOK_KILL_GRACE" || die 'SITTER_HOOK_KILL_GRACE must be a positive integer'; HOOK_KILL_GRACE=$((10#$HOOK_KILL_GRACE))
+if ((HOOK_KILL_GRACE <= 0)); then die 'SITTER_HOOK_KILL_GRACE must be a positive integer'; fi
+is_uint "$POLL_INTERVAL" || die 'SITTER_POLL_INTERVAL must be a positive integer'; POLL_INTERVAL=$((10#$POLL_INTERVAL))
+if ((POLL_INTERVAL <= 0)); then die 'SITTER_POLL_INTERVAL must be a positive integer'; fi
+
+case $VERB in
+  run) run ;;
+  expect) expect ;;
+  ack) ack ;;
+  sweep) sweep ;;
+  ask) ask ;;
+  watch) watch ;;
+esac
