@@ -150,6 +150,19 @@ sweep のロックは `$SITTER_HOME` 配下にあるため、スケジューラ�
 （[design-history.md](design-history.md) 参照）で全容疑プリミティブを実測し、
 追加型の `shasum` → `sha256sum` フォールバックを導入した結果、プロセス
 監視コアを含む全スイートが `windows-latest` の Git Bash でグリーンに
-なりました（当時 23/23。スイートはその後さらに拡大）。CI では Git Bash を
-非ブロッキングジョブとして実行しています。グリーン実績が積み上がるまでは、
-引き続き WSL を推奨パスとします。
+なりました（当時 23/23。スイートはその後さらに拡大）。
+
+スイートの拡大にともない、Git Bash では満たせないケースが加わり、現在は 3 件が
+失敗します。`aw_11_prepare_failure_prevents_send` は台帳ディレクトリを
+`chmod 500` で書き込み不可にして prepare が失敗することを、
+`aw_46_unreadable_no_ack` は reply-file を `chmod 000` で読めなくして観測が
+失敗することを、それぞれ確認します。Git Bash はどちらの拒否も強制しないため
+操作が成功してしまい、アサーションは exit 1 ではなく exit 0 を見ます。これらは
+MSYS2 が提供しない POSIX の権限意味論を測っているのであって、sitter の欠陥では
+ありません。3 件目の `aw_64_existing_hook_regressions_green` は `TERM` を trap
+するフックの kill を扱うもので、Git Bash はスイート実行が約 3 倍遅く
+（開発機の 266 秒に対し 829 秒）、シグナルタイミング依存のケースが不安定に
+なります。
+
+このため CI では Git Bash を非ブロッキングジョブとして実行し、正式な利用経路は
+引き続き WSL とします。

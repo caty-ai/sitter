@@ -68,7 +68,7 @@ install, nothing to pay for.
 | macOS | ✅ Supported | bash 3.2+; audited with the full test suite on macOS |
 | Linux | ✅ Supported | bash 3.2+; audited with the full test suite on Ubuntu 24.04 |
 | Windows (WSL) | ✅ Supported | Run the Linux build inside WSL and keep Sitter files on the Linux filesystem |
-| Git Bash / MSYS2 | ⚠️ Experimental | The full suite has passed, but WSL remains the supported Windows path; see [Windows support](#windows-support) |
+| Git Bash / MSYS2 | ⚠️ Experimental | Runs, but a few cases fail on permission and timing semantics; WSL is the supported Windows path. See [Windows support](#windows-support) |
 
 ### AI agents and CLI workers
 
@@ -389,9 +389,15 @@ schtasks /Create /SC MINUTE /MO 5 /TN sitter-sweep ^
   /TR "wsl.exe -e /home/<you>/.local/bin/sitter sweep --once --ledger /home/<you>/.sitter/runs.jsonl --on-fail /home/<you>/hook.sh"
 ```
 
-**Experimental: Git Bash / MSYS2.** The full suite has gone green there, but
-WSL stays the recommended path until Git Bash has a longer green track record.
-How that support came about is in the
+**Experimental: Git Bash / MSYS2.** sitter runs there and most of the suite
+passes, but three cases do not, which is why CI keeps Git Bash as a
+non-blocking job and WSL stays the supported path. Two of them assert that an
+operation is refused after `chmod` removes permission — an unreadable reply
+file, a non-writable ledger directory — and Git Bash does not enforce those
+denials, so the operation succeeds where POSIX would refuse. The third is a
+signal-timing case around killing a hook that traps `TERM`; Git Bash also runs
+the suite roughly three times slower, which makes timing-sensitive cases
+fragile. None of this affects WSL. The background is in the
 [full reference](reference.md#git-bash--msys2-background).
 
 Native Windows shells (PowerShell / CMD) do not provide the bash/POSIX

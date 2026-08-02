@@ -63,7 +63,7 @@ sitter は、依存ゼロの小さな bash ツール 1 つでこの 3 つを塞�
 | macOS | ✅ 対応 | bash 3.2+。macOS で全テストを実行して監査済み |
 | Linux | ✅ 対応 | bash 3.2+。Ubuntu 24.04 で全テストを実行して監査済み |
 | Windows（WSL） | ✅ 対応 | WSL 内で Linux 版を実行し、Sitter のファイルは Linux 側に置く |
-| Git Bash / MSYS2 | ⚠️ 実験的 | 全テストの通過実績はあるが、Windowsの正式な利用経路はWSL。詳細は[Windows対応](#windows-対応) |
+| Git Bash / MSYS2 | ⚠️ 実験的 | 動作はするが、権限とタイミングの意味論差で数件が失敗する。Windowsの正式な利用経路はWSL。詳細は[Windows対応](#windows-対応) |
 
 ### AIエージェント / CLIワーカー
 
@@ -365,9 +365,15 @@ schtasks /Create /SC MINUTE /MO 5 /TN sitter-sweep ^
   /TR "wsl.exe -e /home/<you>/.local/bin/sitter sweep --once --ledger /home/<you>/.sitter/runs.jsonl --on-fail /home/<you>/hook.sh"
 ```
 
-**実験的サポート: Git Bash / MSYS2。** 全テストの通過実績はありますが、
-グリーン実績が積み上がるまでは WSL を推奨パスとします。対応に至った
-調査の経緯は[詳細リファレンス](reference.ja.md#git-bash--msys2-対応の経緯)へ。
+**実験的サポート: Git Bash / MSYS2。** 動作はして大半のテストも通りますが、
+3 件が失敗します。CI で Git Bash を非ブロッキングジョブに留め、WSL を正式な
+利用経路としているのはこのためです。3 件のうち 2 件は `chmod` で権限を落とした
+あとに操作が拒否されることを確認するもの（読めない reply-file・書けない台帳
+ディレクトリ）で、Git Bash はこの拒否を強制しないため、POSIX なら失敗する操作が
+成功してしまいます。残る 1 件は `TERM` を trap するフックを kill する際の
+シグナルタイミングです。Git Bash はスイート実行も約 3 倍遅く、タイミング依存の
+ケースが不安定になります。WSL では起きません。対応に至った調査の経緯は
+[詳細リファレンス](reference.ja.md#git-bash--msys2-対応の経緯)へ。
 
 Windows ネイティブのシェル（PowerShell / CMD）は sitter が必要とする
 bash / POSIX 環境を提供しないため、WSL（または実験的に Git Bash）経由で

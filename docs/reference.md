@@ -154,6 +154,19 @@ died before its first ledger event. A follow-up evidence round (see
 [design-history.md](design-history.md)) measured every suspect primitive,
 shipped an additive `shasum` → `sha256sum` fallback, and the complete suite —
 including the process-supervision core — went green on `windows-latest`
-Git Bash (23/23 at the time; the suite has since grown). CI runs Git Bash as
-a non-blocking job; WSL remains the recommended path until Git Bash has a
-longer green track record.
+Git Bash (23/23 at the time; the suite has since grown).
+
+As the suite grew it added cases that Git Bash cannot satisfy, and three fail
+there today. `aw_11_prepare_failure_prevents_send` makes a ledger directory
+non-writable with `chmod 500` and expects the prepare step to fail;
+`aw_46_unreadable_no_ack` makes a reply file unreadable with `chmod 000` and
+expects the observation to fail. Git Bash does not enforce either denial, so
+both operations succeed and the assertions see exit 0 instead of 1 — the
+tests are measuring POSIX permission semantics that MSYS2 does not provide,
+not a defect in sitter. The third, `aw_64_existing_hook_regressions_green`,
+covers killing a hook that traps `TERM`, and Git Bash runs the suite about
+three times slower (829 s against 266 s on the development machine), which
+makes signal-timing cases fragile.
+
+CI therefore runs Git Bash as a non-blocking job, and WSL remains the
+supported path.
