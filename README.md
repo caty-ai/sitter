@@ -4,7 +4,7 @@
 
 **🇺🇸 English** ｜ [🇯🇵 日本語](README.ja.md) ｜ [🇨🇳 简体中文](README.zh.md) ｜ [🇹🇭 ไทย](README.th.md)
 
-![Sitter brand Hero: “SITTER”, “A WATCH POST FOR DELEGATED AI WORK”, “caty-ai/sitter”, and “FREE & OPEN SOURCE · MIT LICENSE” beside a retro-TV planetary ecosystem. A small coral-orange outer watch post observes delegated work without owning the runtime; the image does not encode dependencies.](assets/readme/hero.png)
+![Sitter brand hero: “SITTER — A WATCH POST FOR DELEGATED AI WORK”. A black cat sits at a night window, watching a constellation of linked job nodes with one glowing alert-red; an open ledger and an alarm lamp sit beside it. The scene is a metaphor for watching delegated work without owning the runtime; the image does not encode dependencies.](assets/readme/hero.png)
 
 <h4>A free tool that watches over the long-running work you hand to an AI or to your computer.</h4>
 

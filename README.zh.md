@@ -4,7 +4,7 @@
 
 [🇺🇸 English](README.md) ｜ [🇯🇵 日本語](README.ja.md) ｜ **🇨🇳 简体中文** ｜ [🇹🇭 ไทย](README.th.md)
 
-![Sitter 品牌主视觉图：“SITTER”、“A WATCH POST FOR DELEGATED AI WORK”、“caty-ai/sitter” 与 “FREE & OPEN SOURCE · MIT LICENSE” 字样，旁边是一个复古电视机风格的行星生态系统。一座珊瑚橙色的小型外围观测哨在不拥有目标运行时的前提下守望着被委派的工作；图片本身不代表任何依赖关系。](assets/readme/hero.png)
+![Sitter 品牌主视觉图：“SITTER — A WATCH POST FOR DELEGATED AI WORK”。夜晚的窗边，一只黑猫守望着由虚线相连的任务节点星座，其中一枚亮起警报红；旁边是一本打开的记录台账和一盏警报灯。这是在不拥有目标运行时的前提下守望被委派工作的隐喻；图片本身不代表任何依赖关系。](assets/readme/hero.png)
 
 <h4>一个免费工具，替你守着那些交给 AI 或电脑去跑的长时间任务。</h4>
 

@@ -4,7 +4,7 @@
 
 [🇺🇸 English](README.md) ｜ **🇯🇵 日本語** ｜ [🇨🇳 简体中文](README.zh.md) ｜ [🇹🇭 ไทย](README.th.md)
 
-![SitterのブランドHero。左に「SITTER」「A WATCH POST FOR DELEGATED AI WORK」「caty-ai/sitter」「FREE & OPEN SOURCE · MIT LICENSE」、右にレトロTV風の惑星系がある。外縁にあるコーラルオレンジ色の小さな観測点は、対象runtimeを所有せずに委譲した仕事を見守るwatch postの比喩であり、画像は接続関係を示さない。](assets/readme/hero.png)
+![SitterのブランドHero。「SITTER — A WATCH POST FOR DELEGATED AI WORK」。夜の窓辺で黒猫が、線で結ばれたジョブの星座を見守っている。1つだけ警告色の赤に光り、傍らには記録台帳とアラームランプ。対象runtimeを所有せずに委譲した仕事を見守るwatch postの比喩であり、画像は接続関係を示さない。](assets/readme/hero.png)
 
 <h4>AI やパソコンに任せた「時間のかかる作業」を、そばで見張ってくれる無料のツールです。</h4>
 
