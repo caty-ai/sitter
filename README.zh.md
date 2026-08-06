@@ -227,22 +227,6 @@ export PATH="$HOME/.local/bin:$PATH"
 | 我想参与贡献 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 我发现了 bug 或漏洞 | [SECURITY.md](SECURITY.md) |
 
----
-
-## 许可证
-
-[MIT](LICENSE) © 2026 Caty
-
-我们希望任何人都能使用它、修改它，并把它构建进自己的工具和服务里，所以选了 MIT。只要保留版权声明，其余一概不限制 —— 包括商用，也包括修改后的副本。
-
----
-
-<div align="center">
-
-**一个 bash 文件** ｜ **任意 CLI 代理** ｜ **零依赖，免费**
-
-</div>
-
 <!-- family:generated:family-footer:start -->
 
 ---
@@ -262,3 +246,19 @@ export PATH="$HOME/.local/bin:$PATH"
 | 横轴 | **Sitter** | 替你盯着委派出去的智能体 — 监视、留证、重启 | 已公开・MIT |
 
 <!-- family:generated:family-footer:end -->
+
+---
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Caty
+
+我们希望任何人都能使用它、修改它，并把它构建进自己的工具和服务里，所以选了 MIT。只要保留版权声明，其余一概不限制 —— 包括商用，也包括修改后的副本。
+
+---
+
+<div align="center">
+
+**一个 bash 文件** ｜ **任意 CLI 代理** ｜ **零依赖，免费**
+
+</div>
