@@ -242,3 +242,13 @@ export PATH="$HOME/.local/bin:$PATH"
 **ไฟล์ bash ไฟล์เดียว** ｜ **ใช้กับ CLI agent ตัวไหนก็ได้** ｜ **ไม่มี dependency ｜ ใช้ฟรี**
 
 </div>
+
+<!-- family:generated:family-footer:start -->
+
+---
+
+รีโพนี้เป็นส่วนหนึ่งของ **ครอบครัว Caty AI** — ชุดเครื่องมือโอเพนซอร์สสำหรับดูแลครอบครัวเอเจนต์ AI แผนที่ฉบับเต็ม (รวมโมดูลที่กำลังเตรียมเปิด) อยู่ที่ [Family OS](https://github.com/caty-ai/family-os)
+
+โมดูลพี่น้อง: [Caty Agent Harness](https://github.com/caty-ai/caty-agent-harness) · [Persona Engine](https://github.com/caty-ai/persona-engine) · [X Collector](https://github.com/caty-ai/x-collector) · [Family Dev Handbook](https://github.com/caty-ai/family-dev-handbook)
+
+<!-- family:generated:family-footer:end -->

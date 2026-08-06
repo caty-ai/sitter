@@ -242,3 +242,13 @@ export PATH="$HOME/.local/bin:$PATH"
 **一个 bash 文件** ｜ **任意 CLI 代理** ｜ **零依赖，免费**
 
 </div>
+
+<!-- family:generated:family-footer:start -->
+
+---
+
+本仓库属于 **Caty AI 家族** — 用于运营 AI 智能体家族的开源工具集。完整地图（包括仍在准备公开的模块）见 [Family OS](https://github.com/caty-ai/family-os)。
+
+同家族模块: [Caty Agent Harness](https://github.com/caty-ai/caty-agent-harness) · [Persona Engine](https://github.com/caty-ai/persona-engine) · [X Collector](https://github.com/caty-ai/x-collector) · [Family Dev Handbook](https://github.com/caty-ai/family-dev-handbook)
+
+<!-- family:generated:family-footer:end -->
