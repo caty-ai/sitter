@@ -227,22 +227,6 @@ Entry points by purpose.
 | I want to contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | I found a bug or a vulnerability | [SECURITY.md](SECURITY.md) |
 
----
-
-## License
-
-[MIT](LICENSE) © 2026 Caty
-
-We want anyone to use it, change it, and build it into their own tools and services, so it is MIT. Keep the copyright notice and nothing else is restricted — commercial use included, modified copies included.
-
----
-
-<div align="center">
-
-**One bash file** ｜ **Any CLI agent** ｜ **Zero dependencies, free**
-
-</div>
-
 <!-- family:generated:family-footer:start -->
 
 ---
@@ -262,3 +246,19 @@ Part of the **Caty AI family** — open tools for running a family of AI agents.
 | Horizontal | **Sitter** | Babysits delegated agent runs — watches, keeps evidence, restarts | published, MIT |
 
 <!-- family:generated:family-footer:end -->
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Caty
+
+We want anyone to use it, change it, and build it into their own tools and services, so it is MIT. Keep the copyright notice and nothing else is restricted — commercial use included, modified copies included.
+
+---
+
+<div align="center">
+
+**One bash file** ｜ **Any CLI agent** ｜ **Zero dependencies, free**
+
+</div>
