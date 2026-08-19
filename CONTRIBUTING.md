@@ -15,9 +15,11 @@ welcome within the frozen design boundaries.
   installed, lint skips that step and stays non-blocking.
 - **Optional `python3`.** The test suite uses it only for the JSON-validity
   assertion; local runs skip that assertion when `python3` is absent and
-  report the skip once.
-- **Platforms.** macOS and Ubuntu are CI-enforced. Windows (WSL / Git Bash) is
-  best-effort because that CI lane is continue-on-error.
+  report the skip once. In CI the assertion is required and its absence fails
+  the run.
+- **Platforms.** Ubuntu CI gates every pull request; macOS CI runs on pushes to
+  main. The Windows lane (Git Bash) is continue-on-error, so Windows stays
+  best-effort.
 
 ## Ground rules
 
@@ -43,9 +45,10 @@ welcome within the frozen design boundaries.
   integration contract is the ledger path and `--on-fail`; PRs adding a third
   contract point will be declined.
 - **Tests are the spec's teeth.** Run `make test` locally (it wraps
-  `tests/run.sh`); it must pass on macOS and Linux (CI enforces both). New
-  behavior needs a scenario in the fault-injection matrix, using the
-  fake-worker fixtures and shrunk timers — no real workers, no network.
+  `tests/run.sh`); it must pass on macOS and Linux (Ubuntu CI gates every PR;
+  macOS CI runs on pushes to main). New behavior needs a scenario in the
+  fault-injection matrix, using the fake-worker fixtures and shrunk timers — no
+  real workers, no network.
 
 ## Workflow
 
