@@ -250,6 +250,17 @@ Part of the **Caty AI family** — open tools for running a family of AI agents.
 
 ---
 
+## Project status
+
+[![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
+
+- **CI** — the badge above is live: every push runs the full fault-injection suite (the case count is machine-reported by `make test`)
+- **Verified environments** — macOS and Ubuntu are merge gates; Windows (WSL / Git Bash) is a best-effort lane
+- **Maturity** — v0.2.1; the six verbs (`run` / `expect` / `ack` / `sweep` / `ask` / `watch`) are spec-frozen (docs/requirements-v0.md)
+- **Known limitations** — the denylist is an accident guard, not a security wall; retries happen only for jobs you explicitly declared idempotent
+
+---
+
 ## License
 
 [MIT](LICENSE) © 2026 Caty

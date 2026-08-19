@@ -250,6 +250,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
+## 项目状态
+
+[![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
+
+- **CI** — 上面的徽章是实时的：每次 push 都会运行完整的 fault-injection suite，而用例数由 `make test` 自动报告
+- **已验证环境** — macOS 和 Ubuntu 是合并前的门禁条件；Windows（WSL / Git Bash）属于尽力支持
+- **成熟度** — v0.2.1；6 个操作（`run` / `expect` / `ack` / `sweep` / `ask` / `watch`）已在 `docs/requirements-v0.md` 中作为规范冻结
+- **已知限制** — denylist 只是防止误操作的护栏，不是安全屏障；只有你明确声明为幂等的任务才会触发重试
+
+---
+
 ## 许可证
 
 [MIT](LICENSE) © 2026 Caty

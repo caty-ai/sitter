@@ -3,6 +3,22 @@
 Thanks for your interest. sitter is small on purpose; contributions are
 welcome within the frozen design boundaries.
 
+## Prerequisites
+
+- **bash 3.2+.** sitter targets the stock bash that ships on macOS.
+- **git.** Use it for the normal issue/branch/PR workflow.
+- **GNU make 3.81+.** `make test` and `make lint` are the canonical entry
+  points (`make test` wraps `tests/run.sh`).
+- **Standard macOS/Linux POSIX userland.** Runtime dependencies stay at zero:
+  no third-party installs are required.
+- **Optional `shellcheck`.** `make lint` uses it when available; if it is not
+  installed, lint skips that step and stays non-blocking.
+- **Optional `python3`.** The test suite uses it only for the JSON-validity
+  assertion; local runs skip that assertion when `python3` is absent and
+  report the skip once.
+- **Platforms.** macOS and Ubuntu are CI-enforced. Windows (WSL / Git Bash) is
+  best-effort because that CI lane is continue-on-error.
+
 ## Ground rules
 
 - **Issue first.** Open an issue describing the why and the "done when"
@@ -26,10 +42,10 @@ welcome within the frozen design boundaries.
   locking already does. The
   integration contract is the ledger path and `--on-fail`; PRs adding a third
   contract point will be declined.
-- **Tests are the spec's teeth.** Run `bash tests/run.sh` locally; it must
-  pass on macOS and Linux (CI enforces both). New behavior needs a scenario
-  in the fault-injection matrix, using the fake-worker fixtures and shrunk
-  timers — no real workers, no network.
+- **Tests are the spec's teeth.** Run `make test` locally (it wraps
+  `tests/run.sh`); it must pass on macOS and Linux (CI enforces both). New
+  behavior needs a scenario in the fault-injection matrix, using the
+  fake-worker fixtures and shrunk timers — no real workers, no network.
 
 ## Workflow
 

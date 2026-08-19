@@ -250,6 +250,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
+## สถานะโปรเจกต์
+
+[![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
+
+- **CI** — แบดจ์ด้านบนเป็นสถานะสด: ทุก push จะรัน fault-injection suite แบบเต็ม และจำนวนเคสถูกรายงานโดยอัตโนมัติจาก `make test`
+- **สภาพแวดล้อมที่ยืนยันแล้ว** — macOS และ Ubuntu เป็นเงื่อนไขบังคับก่อน merge; Windows (WSL / Git Bash) รองรับแบบพยายามเต็มที่
+- **ระดับความนิ่งของโปรเจกต์** — v0.2.1; การทำงานทั้ง 6 แบบ (`run` / `expect` / `ack` / `sweep` / `ask` / `watch`) ถูกตรึงไว้ในสเปกตาม `docs/requirements-v0.md`
+- **ข้อจำกัดที่ทราบแล้ว** — denylist เป็นตัวกันพลาดจากอุบัติเหตุ ไม่ใช่กำแพงความปลอดภัย; จะลองใหม่เฉพาะงานที่คุณประกาศไว้ชัดเจนว่าเป็น idempotent เท่านั้น
+
+---
+
 ## สัญญาอนุญาต
 
 [MIT](LICENSE) © 2026 Caty

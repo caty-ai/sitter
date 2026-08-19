@@ -250,6 +250,17 @@ sitter は「勝手なことをしない」を設計の柱にしています。
 
 ---
 
+## プロジェクトの現在地
+
+[![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
+
+- **CI** — 上のバッジはライブです。push のたびに完全な fault-injection suite が走り、ケース数は `make test` の結果で機械的に報告されます
+- **検証済み環境** — macOS と Ubuntu はマージの必須条件です。Windows（WSL / Git Bash）は、できる範囲での対応です
+- **成熟度** — v0.2.1。6 つの操作（`run` / `expect` / `ack` / `sweep` / `ask` / `watch`）は、`docs/requirements-v0.md` にある仕様として凍結されています
+- **既知の制約** — denylist は事故防止のガードであり、セキュリティ境界ではありません。再試行は、あなたが冪等だと明示したジョブにだけ行われます
+
+---
+
 ## ライセンス
 
 [MIT](LICENSE) © 2026 Caty
