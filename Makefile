@@ -5,9 +5,8 @@ test:
 
 lint:
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		echo "Running shellcheck (non-blocking; blocking enforcement arrives with #17/B6)..."; \
-		shellcheck sitter tests/*.sh tests/fixtures/*.sh scripts/*.sh examples/*.sh || true; \
-		echo "shellcheck run complete (non-blocking; blocking enforcement arrives with #17/B6)"; \
+		echo "Running shellcheck (blocking, #17/B6)..."; \
+		shellcheck sitter tests/*.sh tests/fixtures/*.sh scripts/*.sh examples/*.sh; \
 	else \
-		echo "shellcheck not installed; skipping lint (non-blocking; blocking enforcement arrives with #17/B6)"; \
+		echo "shellcheck not installed; skipping lint"; exit 0; \
 	fi

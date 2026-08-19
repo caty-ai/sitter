@@ -11,15 +11,16 @@ welcome within the frozen design boundaries.
   points (`make test` wraps `tests/run.sh`).
 - **Standard macOS/Linux POSIX userland.** Runtime dependencies stay at zero:
   no third-party installs are required.
-- **Optional `shellcheck`.** `make lint` uses it when available; if it is not
-  installed, lint skips that step and stays non-blocking.
+- **Optional `shellcheck`.** When installed, its findings fail `make lint`. If
+  it is not installed, lint prints a skip notice and exits 0.
 - **Optional `python3`.** The test suite uses it only for the JSON-validity
   assertion; local runs skip that assertion when `python3` is absent and
   report the skip once. In CI the assertion is required and its absence fails
   the run.
 - **Platforms.** Ubuntu CI gates every pull request; macOS CI runs on pushes to
-  main. The Windows lane (Git Bash) is continue-on-error, so Windows stays
-  best-effort.
+  main and on every pull request via the test-lint caller (reusable
+  `test-macos`). The Windows lane (Git Bash) is continue-on-error, so Windows
+  stays best-effort.
 
 ## Ground rules
 
