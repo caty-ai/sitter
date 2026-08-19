@@ -427,7 +427,7 @@ bash / POSIX 環境を提供しないため、WSL（または実験的に Git Ba
 - [x] `run` 監視: stall/timeout kill・有界の冪等再起動・denylist 拒否
 - [x] `expect`/`ack`/`sweep` 返事デッドマン（催促 2 回 → `awaiting_human`。各遷移は正確に 1 回発火）
 - [x] `ask`/`watch`: exact argv の sender 実行・永続的な reply-file baseline・再送しない回復・同一 id の原子的 admission
-- [x] 正準の故障注入 145 テスト。macOS と Ubuntu 24.04（非 root・repository read-only）で監査済み
+- [x] 正準の故障注入スイート — ケース数はスイート自身が機械出力する（`bash tests/run.sh` の summary 行: 149 PASS, 0 FAIL, 81 ask/watch cases。[この実行](https://github.com/caty-ai/sitter/actions/runs/32236745818)時点）。macOS と Ubuntu 24.04（非 root・repository read-only）で監査済み
 - [ ] 実行後の曖昧ケース分類（exit 0 なのに空振りの検出）— まず受動計測から。sitter コアの外に置く
 - [ ] 共有ディレクトリ expect 投入 — 具体的な利用者が現れるまで据え置き（[ADR-0002](adr/0002-expect-single-writer.md)）
 

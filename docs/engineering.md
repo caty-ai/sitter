@@ -451,7 +451,7 @@ their triggers are recorded in
 - [x] `run` supervision: stall/timeout kill, bounded idempotent restarts, denylist refusal
 - [x] `expect`/`ack`/`sweep` reply deadman (two nudges, then `awaiting_human`; each transition fires exactly once)
 - [x] `ask`/`watch`: exact-argv sender execution, durable reply-file baseline, recovery without re-send, atomic same-id admission
-- [x] canonical 145-case fault-injection suite; audited on macOS and Ubuntu 24.04 (non-root, read-only repository)
+- [x] canonical fault-injection suite — the case count is machine-reported by the suite itself (`bash tests/run.sh` summary line: 149 PASS, 0 FAIL, 81 ask/watch cases as of [this run](https://github.com/caty-ai/sitter/actions/runs/32236745818)); audited on macOS and Ubuntu 24.04 (non-root, read-only repository)
 - [ ] post-run ambiguity classification (exit 0 no-op detection) — measured passively first; lives outside sitter core
 - [ ] shared-directory expect submission — deferred until a concrete consumer exists ([ADR-0002](adr/0002-expect-single-writer.md))
 
