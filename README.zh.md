@@ -10,9 +10,9 @@
 
 [![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![bash](https://img.shields.io/badge/runtime-bash%203.2%2B-4EAA25?logo=gnubash&logoColor=white)
+![bash](https://img.shields.io/badge/runtime-bash%203.2%2B-lightgrey?logo=gnubash&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL)-lightgrey)
-![deps](https://img.shields.io/badge/dependencies-none-success)
+![deps](https://img.shields.io/badge/dependencies-none-lightgrey)
 
 [它是做什么的](#what) ｜ [你需要什么](#requirements) ｜ [快速开始](#start) ｜ [为什么安全](#safety) ｜ [了解更多](#more)
 
