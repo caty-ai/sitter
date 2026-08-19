@@ -1,0 +1,21 @@
+name: Risk Review Gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+permissions: {contents: read}
+concurrency: {group: 'risk-review-${{ github.event.pull_request.number }}', cancel-in-progress: true}
+jobs:
+  risk-review-gate:
+    uses: caty-ai/family-dev-handbook/.github/workflows/reusable-review-labels.yml@ci-v1
+    permissions: {contents: read, issues: read, pull-requests: write}
+    with:
+      risk_paths_billing: 'none'   # no payment/spend code (seat-verified 2026-08-19)
+      risk_paths_outbound: 'none'  # no publish/send code — the denylist BLOCKS outbound commands, it performs none
+      risk_paths_gates: |
+        .github/workflows/**
+        .github/risk-reviewers.txt
+        Makefile
+        tests/run.sh
+        tests/lib.sh
+        tests/fixtures/*.sh
+      risk_paths_auth: 'none'      # no auth boundary (AUTH self-check warning expected = recorded no-auth confirmation)
