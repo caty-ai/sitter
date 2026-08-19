@@ -47,7 +47,6 @@ jobs:
       - run: bash tests/run.sh
   shellcheck:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck sitter tests/*.sh tests/fixtures/*.sh scripts/*.sh examples/*.sh
