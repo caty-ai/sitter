@@ -59,6 +59,20 @@ welcome within the frozen design boundaries.
 4. PR description: what changed, why, files touched, and test evidence.
 5. One approving review, green CI, then merge.
 
+## Releases
+
+- **Release tags must be annotated.** Create them with
+  `git tag -a vX.Y.Z -F <file>`, never bare `git tag vX.Y.Z`. A lightweight tag
+  fails the release-sync check and creates no GitHub Release.
+- **Write the first line as a release title.** release-sync uses it as the
+  GitHub Release title, so it must be meaningful on its own.
+- **Include evidence in the tag message.** The family's T-5 requirement calls
+  for at least one verifiable pointer: a merge commit SHA, a PR or issue URL,
+  or a path that exists at the tagged commit.
+- **Leave the historical tags alone.** `v0.2.0` and `v0.2.1` are lightweight
+  tags, but they are deliberately not being rewritten. They predate this rule
+  and are not examples for future releases.
+
 ## Reporting bugs
 
 Include: OS (macOS/Linux), bash version, the exact sitter invocation, the
