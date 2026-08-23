@@ -22,6 +22,21 @@ jobs:
         with:
           node-version: 26
           registry-url: https://registry.npmjs.org
+      - name: Verify release tag binding
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          git fetch --force origin "refs/tags/v$REQUESTED_VERSION:refs/tags/v$REQUESTED_VERSION"
+          tag_type="$(git cat-file -t "v$REQUESTED_VERSION")"
+          if [[ "$tag_type" != "tag" ]]; then
+            echo "v$REQUESTED_VERSION is not an annotated tag (got '$tag_type')." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "v$REQUESTED_VERSION^{commit}")"
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "Tag v$REQUESTED_VERSION points at $tag_commit but this run is publishing $GITHUB_SHA." >&2
+            exit 1
+          fi
       - run: bash tests/run.sh
       - name: Stage the script into the package root
         run: |

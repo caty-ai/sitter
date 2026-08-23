@@ -31,6 +31,9 @@
   "bin": {
     "sitter": "./sitter"
   },
+  "scripts": {
+    "prepublishOnly": "test -x sitter && test -f LICENSE"
+  },
   "os": [
     "darwin",
     "linux"
