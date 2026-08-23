@@ -121,10 +121,11 @@ flowchart LR
 
 ```text
 https://github.com/caty-ai/sitter
-请安装这个工具，并教我怎么用
+请用 npm install -g @caty-ai/sitter 安装这个工具，然后教我怎么用
+（如果没有 npm，就按 README 里的手动安装步骤来）
 ```
 
-sitter 是一个小巧的单文件工具，大多数代理会一路把它装完。如果行不通，就自己照着下面的步骤做。
+把具体命令写进去，是为了不让代理自己发明安装路线：装进来的只有一个带来源证明（provenance）发布的官方 npm 包，用 `npm update -g @caty-ai/sitter` 就能保持最新。如果行不通，就自己照着下面的步骤做。
 
 ### 自己动手安装
 

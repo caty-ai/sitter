@@ -121,10 +121,11 @@ Hand your AI agent the URL of this page and ask:
 
 ```text
 https://github.com/caty-ai/sitter
-Install this tool and show me how to use it
+Install this with: npm install -g @caty-ai/sitter — then show me how to use it.
+(If npm is not available, follow the install steps in the README instead.)
 ```
 
-sitter is a small, single-file tool, so most agents will take it all the way through installation. If that does not work, run the steps below yourself.
+Naming the exact command keeps your agent from inventing its own install route: what goes in is the one official npm package, published with provenance, and `npm update -g @caty-ai/sitter` keeps it current. If that does not work, run the steps below yourself.
 
 ### Install it yourself
 
