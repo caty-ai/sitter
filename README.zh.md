@@ -121,6 +121,14 @@ sitter 是一个小巧的单文件工具，大多数代理会一路把它装完�
 
 sitter 里面只有一个可读的文本脚本。它从不要你的管理员密码，也从不改动你的系统设置。
 
+**捷径（如果你装有 Node.js）**
+
+```sh
+npm install -g @caty-ai/sitter
+```
+
+如果这条命令顺利结束，直接跳到第 2 步。装进来的是同一个脚本，用 `npm update -g @caty-ai/sitter` 即可保持最新。没有 `npm`？用下面的三步。
+
 **1. 下载它**
 
 ```sh
@@ -256,7 +264,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - **CI** — 上面的徽章是实时的：每次向 main push 以及每个 pull request 都会运行完整的 fault-injection suite，而用例数由 `make test` 自动报告
 - **已验证环境** — Ubuntu 为每个 pull request 设置门禁；macOS 在每次向 main push 时运行；Windows（Git Bash）属于尽力支持
-- **成熟度** — v0.2.1；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
+- **成熟度** — v0.3.0；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
 - **已知限制** — denylist 只是防止误操作的护栏，不是安全屏障；只有你明确声明为幂等的任务才会触发重试
 
 ---

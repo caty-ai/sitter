@@ -1,0 +1,42 @@
+{
+  "name": "@caty-ai/sitter",
+  "version": "0.3.0",
+  "description": "A babysitter for long-running commands: watch AI agents and batch jobs, restart them safely within declared bounds, and always escalate to a human. Zero-dependency bash.",
+  "keywords": [
+    "supervisor",
+    "watchdog",
+    "ai-agent",
+    "batch-jobs",
+    "long-running",
+    "bash",
+    "cli"
+  ],
+  "homepage": "https://github.com/caty-ai/sitter#readme",
+  "bugs": {
+    "url": "https://github.com/caty-ai/sitter/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caty-ai/sitter.git",
+    "directory": "packages/npm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "sitter",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "sitter": "./sitter"
+  },
+  "scripts": {
+    "prepublishOnly": "test -x sitter && test -f LICENSE"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "license": "MIT"
+}

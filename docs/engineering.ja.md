@@ -125,6 +125,14 @@ Windows では [WSL](https://learn.microsoft.com/ja-jp/windows/wsl/) を
 
 **インストール**
 
+Node.js がある環境なら、PATH と更新を npm に任せられます:
+
+```sh
+npm install -g @caty-ai/sitter
+```
+
+npm がない場合は、スクリプトを直接 PATH に置きます:
+
 ```sh
 mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/caty-ai/sitter/main/sitter -o ~/.local/bin/sitter

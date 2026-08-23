@@ -1,0 +1,4 @@
+# Staged into this directory at publish time from the repo root; never committed here.
+/sitter
+/LICENSE
+*.tgz

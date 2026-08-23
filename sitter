@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Release version of this file. CI's tag job requires the pushed git tag to
 # equal "v$SITTER_VERSION", so bump this in the same commit as a release.
-SITTER_VERSION='0.2.1'
+SITTER_VERSION='0.3.0'
 
 usage() {
   cat <<'EOF'

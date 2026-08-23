@@ -121,6 +121,14 @@ sitter はファイル 1 個の小さなツールなので、たいていのエ�
 
 sitter の中身は、誰でも読めるテキストの台本 1 個です。管理者パスワードは聞きませんし、パソコンの設定も変えません。
 
+**近道（Node.js が入っている場合）**
+
+```sh
+npm install -g @caty-ai/sitter
+```
+
+エラーなく終わったら、そのまま手順 2 へ進んでください。入るのは同じ台本 1 個で、`npm update -g @caty-ai/sitter` で最新に保てます。`npm` がない場合は、以下の 3 ステップでどうぞ。
+
 **1. ダウンロードする**
 
 ```sh
@@ -256,7 +264,7 @@ sitter は「勝手なことをしない」を設計の柱にしています。
 
 - **CI** — 上のバッジはライブです。main へのすべての push とすべての pull request で完全な fault-injection suite が走り、ケース数は `make test` の結果で機械的に報告されます
 - **検証済み環境** — Ubuntu はすべての pull request のゲートです。macOS は main へのすべての push で実行されます。Windows（Git Bash）は、できる範囲での対応です
-- **成熟度** — v0.2.1。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
+- **成熟度** — v0.3.0。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
 - **既知の制約** — denylist は事故防止のガードであり、セキュリティ境界ではありません。再試行は、あなたが冪等だと明示したジョブにだけ行われます
 
 ---
