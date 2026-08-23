@@ -1,0 +1,5 @@
+#!/bin/sh
+echo "agent: reading the codebase..."
+sleep 1
+echo "agent: drafting changes..."
+sleep 999

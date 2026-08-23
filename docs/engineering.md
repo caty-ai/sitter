@@ -122,6 +122,18 @@ nothing to configure — six promises are the whole tool.
 
 ---
 
+## Demo recordings
+
+The README shows a combined success-then-stall demo. Three single-pattern recordings live in [assets/demos/](../assets/demos/):
+
+- **[demo-stall.gif](../assets/demos/demo-stall.gif)** — stall detection, results inspected with `jq`
+- **[demo-nodeps.gif](../assets/demos/demo-nodeps.gif)** — the same stall, inspected with `cat` and `grep` only (no extra tools)
+- **[demo-success.gif](../assets/demos/demo-success.gif)** — a job that finishes fine: no alert, success recorded in the ledger
+
+Every recording is generated from a [vhs](https://github.com/charmbracelet/vhs) tape in the same directory, so they can be re-recorded deterministically after a behavior change: `vhs assets/demos/<name>.tape` from the repo root. The tapes shorten `SITTER_POLL_INTERVAL` and `--grace` so each demo fits in ~30 seconds; production defaults are 15 minutes stall / 10 seconds grace.
+
+---
+
 ## Quickstart
 
 sitter is a single bash script, so putting it on your PATH is the whole

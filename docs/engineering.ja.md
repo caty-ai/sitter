@@ -115,6 +115,18 @@ sitter は「頼んだ仕事がちゃんと終わったかを、代わりに見�
 
 ---
 
+## デモ録画
+
+README には成功→凍結検知の合体デモを載せています。パターン別の録画 3 本は [assets/demos/](../assets/demos/) にあります。
+
+- **[demo-stall.gif](../assets/demos/demo-stall.gif)** — 凍結検知。結果確認は `jq`
+- **[demo-nodeps.gif](../assets/demos/demo-nodeps.gif)** — 同じ凍結検知を `cat` と `grep` だけで確認（追加ツールなし）
+- **[demo-success.gif](../assets/demos/demo-success.gif)** — 普通に完走するジョブ。アラートは出ず、台帳に成功が残る
+
+すべての録画は同ディレクトリの [vhs](https://github.com/charmbracelet/vhs) tape から生成しており、挙動が変わったらリポジトリ直下で `vhs assets/demos/<name>.tape` を実行すれば決定論的に撮り直せます。デモが 30 秒前後に収まるよう tape 側で `SITTER_POLL_INTERVAL` と `--grace` を短縮しています（本番の既定値は stall 15 分 / grace 10 秒）。
+
+---
+
 ## クイックスタート
 
 単一ファイルの bash スクリプトなので、PATH に置くだけで導入は完了します。
