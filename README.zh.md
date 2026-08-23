@@ -10,6 +10,7 @@
 
 [![CI](https://github.com/caty-ai/sitter/actions/workflows/ci.yml/badge.svg)](https://github.com/caty-ai/sitter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/%40caty-ai%2Fsitter?logo=npm&label=npm)](https://www.npmjs.com/package/@caty-ai/sitter)
 ![bash](https://img.shields.io/badge/runtime-bash%203.2%2B-lightgrey?logo=gnubash&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL)-lightgrey)
 ![deps](https://img.shields.io/badge/dependencies-none-lightgrey)
