@@ -133,6 +133,14 @@ On Windows, use [WSL](https://learn.microsoft.com/windows/wsl/) — see
 
 **Install**
 
+With Node.js available, npm handles PATH and updates for you:
+
+```sh
+npm install -g @caty-ai/sitter
+```
+
+Without npm, place the script on your PATH directly:
+
 ```sh
 mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/caty-ai/sitter/main/sitter -o ~/.local/bin/sitter

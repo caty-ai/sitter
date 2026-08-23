@@ -121,6 +121,14 @@ Three steps. Open a terminal first — on a Mac it is in Applications → Utilit
 
 Inside sitter there is exactly one readable text script. It never asks for your admin password and never changes your system settings.
 
+**The short way (if you have Node.js)**
+
+```sh
+npm install -g @caty-ai/sitter
+```
+
+If that finishes without an error, skip straight to step 2. It installs the same single script, and `npm update -g @caty-ai/sitter` keeps it up to date. No `npm`? Use the three steps below.
+
 **1. Download it**
 
 ```sh
