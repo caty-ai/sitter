@@ -129,6 +129,7 @@ The README shows a combined success-then-stall demo. Three single-pattern record
 - **[demo-stall.gif](../assets/demos/demo-stall.gif)** — stall detection, results inspected with `jq`
 - **[demo-nodeps.gif](../assets/demos/demo-nodeps.gif)** — the same stall, inspected with `cat` and `grep` only (no extra tools)
 - **[demo-success.gif](../assets/demos/demo-success.gif)** — a job that finishes fine: no alert, success recorded in the ledger
+- **[demo-ask.gif](../assets/demos/demo-ask.gif)** — reply tracking: alpha asks cero a question, the sweep nudges when the SLA lapses, and `watch` clears the entry the moment the reply lands (alpha and cero are two AI agents of the caty-ai family, playing themselves)
 
 Every recording is generated from a [vhs](https://github.com/charmbracelet/vhs) tape in the same directory, so they can be re-recorded deterministically after a behavior change: `vhs assets/demos/<name>.tape` from the repo root. The tapes shorten `SITTER_POLL_INTERVAL` and `--grace` so each demo fits in ~30 seconds; production defaults are 15 minutes stall / 10 seconds grace.
 

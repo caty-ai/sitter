@@ -122,6 +122,7 @@ README には成功→凍結検知の合体デモを載せています。パタ�
 - **[demo-stall.gif](../assets/demos/demo-stall.gif)** — 凍結検知。結果確認は `jq`
 - **[demo-nodeps.gif](../assets/demos/demo-nodeps.gif)** — 同じ凍結検知を `cat` と `grep` だけで確認（追加ツールなし）
 - **[demo-success.gif](../assets/demos/demo-success.gif)** — 普通に完走するジョブ。アラートは出ず、台帳に成功が残る
+- **[demo-ask.gif](../assets/demos/demo-ask.gif)** — 返事トラッキング。alpha が cero に質問し、SLA 切れを sweep が自動催促、返事が届いた瞬間に `watch` が自動でクローズする（alpha と cero は caty-ai ファミリーの AI エージェント本人たちです）
 
 すべての録画は同ディレクトリの [vhs](https://github.com/charmbracelet/vhs) tape から生成しており、挙動が変わったらリポジトリ直下で `vhs assets/demos/<name>.tape` を実行すれば決定論的に撮り直せます。デモが 30 秒前後に収まるよう tape 側で `SITTER_POLL_INTERVAL` と `--grace` を短縮しています（本番の既定値は stall 15 分 / grace 10 秒）。
 
