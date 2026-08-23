@@ -32,6 +32,8 @@ and whether a reply you are waiting for has been forgotten — and it always tel
 
 ![35-second terminal demo. Scene 1: a job handed to sitter finishes normally and the alert file stays empty. Scene 2: a second job goes silent mid-run; sitter detects the stall, stops it, and the ledger lists every event of both runs — the success and the failure side by side.](assets/readme/demo.gif)
 
+[More demos](docs/engineering.md#demos) — stall detection in detail, a zero-dependency variant, and reply tracking.
+
 </div>
 
 ---

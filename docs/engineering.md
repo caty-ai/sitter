@@ -122,6 +122,8 @@ nothing to configure — six promises are the whole tool.
 
 ---
 
+<a id="demos"></a>
+
 ## Demo recordings
 
 The README shows a combined success-then-stall demo. Three single-pattern recordings live in [assets/demos/](../assets/demos/):
