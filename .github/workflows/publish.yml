@@ -58,5 +58,6 @@ jobs:
             echo "Requested version '$REQUESTED_VERSION' does not match SITTER_VERSION '$script_version' in the script." >&2
             exit 1
           fi
+      - run: bash scripts/packaged-tarball-install-test.sh
       - run: npm publish --provenance --access public --tag latest
         working-directory: packages/npm
