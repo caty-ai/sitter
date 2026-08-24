@@ -141,6 +141,31 @@ event that precedes a restart, every `end killed` produced by the kill switch,
 and `end success`. Filter on `SITTER_REASON` rather than on `SITTER_EVENT` —
 terminal failure and budget exhaustion both arrive as `end`.
 
+### Ledger reason contract (run family)
+
+The run-family `reason` field is an open string vocabulary. Consumers must not
+whitelist a closed set: currently emitted values are `exit`, `stall`,
+`timeout`, `killed`, `budget_exhausted`, `success`, `denied`, and `""` on
+`start` rows. The ask/sweep hook paths additionally use `sla_breach` and
+`awaiting_human`.
+
+The `event` field names the row family; discriminate the kill kind on `reason`,
+never on `event` — an `event:"stall"` row can carry `reason:"timeout"`.
+
+| Path | Ledger rows | Hook delivery |
+| --- | --- | --- |
+| Non-idempotent attempt failure (`stall`, `timeout`, or `exit`) | `fail` has status `failed` and the attempt reason, followed by terminal `end` with status `failed` and the same reason. | Fires on `end` with `SITTER_REASON` set to that reason. |
+| Retry budget exhausted (idempotent) | Per-attempt `fail` rows retain their attempt reasons, but terminal `end` has both status and reason `budget_exhausted`. The per-attempt stall/timeout truth lives only in the `fail` rows. | Fires on `end` with `SITTER_REASON=budget_exhausted`, not the last attempt reason. |
+| Kill switch | Terminal `end` has status and reason `killed`, but carries no hook reason. | No hook fires for that `end`. |
+| Any `fail` row | Ledger-only, including the `fail` that precedes a terminal non-idempotent `end`. | Never invokes the hook. |
+
+Within one poll tick, detection precedence is kill switch, then timeout, then
+stall. A same-tick stall and kill therefore records `killed` with no `stall`
+row.
+
+Future detection mechanisms may add reason values. Such additions are
+additive; consumers must treat unknown values as opaque.
+
 See [the drop-file hook example](../examples/on-fail-dropfile.sh) for a
 deliberately tiny adapter that appends escalations to a monitored inbox file.
 It is only a hook example: sitter itself has no knowledge of any notifier.

@@ -176,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **เข้าใจว่าอะไรนับว่า "ค้าง"**
 
-sitter ถือว่างานค้างเมื่อมัน**ไม่ผลิตเอาต์พุตเลย — ทั้งบนหน้าจอและใน log — เป็นเวลา 15 นาที** และมันจะหยุดงานนั้น (โดยมีขีดจำกัดเวลาสูงสุดสี่ชั่วโมง) ถ้าคุณกำลังเฝ้างานที่เงียบจนกว่าจะเสร็จ ให้บอก sitter ให้ใช้เฉพาะขีดจำกัดเวลา
+sitter ถือว่างานค้างเมื่อมัน**ไม่ผลิตเอาต์พุตเลย — ทั้งบนหน้าจอและใน log — เป็นเวลา 15 นาที** และมันจะหยุดงานนั้น (โดยมีขีดจำกัดเวลาสูงสุดสี่ชั่วโมง) ถ้าคุณกำลังเฝ้างานที่เงียบจนกว่าจะเสร็จ ให้บอก sitter ให้ใช้เฉพาะขีดจำกัดเวลา ความหมายที่แน่นอนของฟิลด์ใน ledger และค่าของ hook สำหรับผลลัพธ์เหล่านี้กำหนดไว้ใน [ledger reason contract](docs/reference.md#ledger-reason-contract-run-family)
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
@@ -277,7 +277,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - **CI** — แบดจ์ด้านบนเป็นสถานะสด: ทุก push ไปยัง main และทุก pull request จะรัน fault-injection suite แบบเต็ม และจำนวนเคสถูกรายงานโดยอัตโนมัติจาก `make test`
 - **สภาพแวดล้อมที่ยืนยันแล้ว** — Ubuntu เป็นเกตสำหรับทุก pull request; macOS รันทุกครั้งที่ push ไปยัง main; Windows (Git Bash) รองรับแบบพยายามเต็มที่
-- **ระดับความนิ่งของโปรเจกต์** — v0.3.0; การทำงาน v0 ทั้ง 4 แบบ (`run` / `expect` / `ack` / `sweep`) ถูกตรึงสเปกไว้ใน `docs/requirements-v0.md` ส่วน `ask` / `watch` ถูกกำหนดไว้โดย `docs/specs/prd-v0.2-ask-watch.md` (ตรวจสอบแล้วใน v0.2.0)
+- **ระดับความนิ่งของโปรเจกต์** — v0.3.1; การทำงาน v0 ทั้ง 4 แบบ (`run` / `expect` / `ack` / `sweep`) ถูกตรึงสเปกไว้ใน `docs/requirements-v0.md` ส่วน `ask` / `watch` ถูกกำหนดไว้โดย `docs/specs/prd-v0.2-ask-watch.md` (ตรวจสอบแล้วใน v0.2.0)
 - **ข้อจำกัดที่ทราบแล้ว** — denylist เป็นตัวกันพลาดจากอุบัติเหตุ ไม่ใช่กำแพงความปลอดภัย; จะลองใหม่เฉพาะงานที่คุณประกาศไว้ชัดเจนว่าเป็น idempotent เท่านั้น
 
 ---

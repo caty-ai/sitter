@@ -176,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **弄清什么算“卡住”**
 
-当任务**整整 15 分钟没有任何输出 —— 屏幕上没有，日志里也没有**时，sitter 就判定它卡住了，并会停掉这个任务（硬上限是四小时）。如果你看守的工作是那种在完成前一直保持安静的类型，告诉 sitter 只用时间上限就好。
+当任务**整整 15 分钟没有任何输出 —— 屏幕上没有，日志里也没有**时，sitter 就判定它卡住了，并会停掉这个任务（硬上限是四小时）。如果你看守的工作是那种在完成前一直保持安静的类型，告诉 sitter 只用时间上限就好。这些结果在台账字段和 hook 值中的确切含义由 [ledger reason contract](docs/reference.md#ledger-reason-contract-run-family) 定义。
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
@@ -277,7 +277,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - **CI** — 上面的徽章是实时的：每次向 main push 以及每个 pull request 都会运行完整的 fault-injection suite，而用例数由 `make test` 自动报告
 - **已验证环境** — Ubuntu 为每个 pull request 设置门禁；macOS 在每次向 main push 时运行；Windows（Git Bash）属于尽力支持
-- **成熟度** — v0.3.0；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
+- **成熟度** — v0.3.1；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
 - **已知限制** — denylist 只是防止误操作的护栏，不是安全屏障；只有你明确声明为幂等的任务才会触发重试
 
 ---

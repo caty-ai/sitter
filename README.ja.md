@@ -176,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **「固まった」と判断される条件を知っておいてください**
 
-sitter は、**画面にもログにも 15 分まったく出力がない作業**を「固まった」とみなして停止します（最長でも 4 時間で打ち切ります）。完了までずっと無言で動く作業を見張らせるときは、時間の上限だけで区切るように指定してください。
+sitter は、**画面にもログにも 15 分まったく出力がない作業**を「固まった」とみなして停止します（最長でも 4 時間で打ち切ります）。完了までずっと無言で動く作業を見張らせるときは、時間の上限だけで区切るように指定してください。これらの結果が台帳とフックへどう記録されるかは、[台帳の reason 契約](docs/reference.ja.md#台帳の-reason-契約run-系)で定めています。
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo 完了'
@@ -277,7 +277,7 @@ sitter は「勝手なことをしない」を設計の柱にしています。
 
 - **CI** — 上のバッジはライブです。main へのすべての push とすべての pull request で完全な fault-injection suite が走り、ケース数は `make test` の結果で機械的に報告されます
 - **検証済み環境** — Ubuntu はすべての pull request のゲートです。macOS は main へのすべての push で実行されます。Windows（Git Bash）は、できる範囲での対応です
-- **成熟度** — v0.3.0。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
+- **成熟度** — v0.3.1。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
 - **既知の制約** — denylist は事故防止のガードであり、セキュリティ境界ではありません。再試行は、あなたが冪等だと明示したジョブにだけ行われます
 
 ---

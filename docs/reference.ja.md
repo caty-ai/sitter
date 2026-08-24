@@ -137,6 +137,31 @@ sweep のロックは `$SITTER_HOME` 配下にあるため、スケジューラ�
 行ってください** — terminal 失敗もリトライ予算切れも、どちらも `end` として
 届きます。
 
+### 台帳の reason 契約（run 系）
+
+run 系の `reason` は、将来の追加を許すオープンな文字列です。値を固定リストとして
+ホワイトリスト化してはいけません。現在出力される値は `exit`、`stall`、
+`timeout`、`killed`、`budget_exhausted`、`success`、`denied`、および
+`start` 行の `""` です。ask/sweep のフック経路では、これに加えて
+`sla_breach` と `awaiting_human` が使われます。
+
+`event` は行の種類を表すフィールドです。停止理由の種類は `event` ではなく、必ず
+`reason` で判定してください。たとえば `event:"stall"` の行でも
+`reason:"timeout"` を持つことがあります。
+
+| 経路 | 台帳に残る行 | フックへの通知 |
+| --- | --- | --- |
+| 非冪等の試行失敗（`stall` / `timeout` / `exit`） | `fail` は status が `failed`、reason がその試行理由となり、続く terminal `end` も status は `failed`、reason は同じ値になります。 | `end` で発火し、`SITTER_REASON` には同じ理由が入ります。 |
+| リトライ予算切れ（冪等） | 試行ごとの `fail` には各試行理由が残りますが、terminal `end` の status と reason はともに `budget_exhausted` です。試行ごとの stall/timeout という事実は `fail` 行にだけ残ります。 | 最後の試行理由ではなく、`SITTER_REASON=budget_exhausted` として `end` で発火します。 |
+| キルスイッチ | terminal `end` の status と reason は `killed` ですが、フック用の reason は渡されません。 | その `end` ではフックは発火しません。 |
+| すべての `fail` 行 | 非冪等の terminal `end` の直前にある `fail` も含め、台帳への記録専用です。 | フックは決して発火しません。 |
+
+同じ poll tick では、キルスイッチ、timeout、stall の順に判定します。そのため
+stall と kill が同時に成立した場合は `killed` が記録され、`stall` 行は残りません。
+
+将来、検出方法の追加にともなって reason の値が増える可能性があります。これは
+追加互換の変更であり、未知の値は解釈せず不透明な値として扱ってください。
+
 意図的に極小のアダプタ例として
 [drop-file フック example](../examples/on-fail-dropfile.sh) を参照してください。
 これはあくまでフックの一例です: sitter 本体はいかなる通知系も知りません。
