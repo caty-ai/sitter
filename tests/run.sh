@@ -1912,15 +1912,18 @@ ASK_WATCH_TESTS=(
   aw_81_malformed_del_reply_file_row_is_poison_consistently
 )
 
-# Cold CI runners can scan bash/perl on first exec beyond the 2s stall margin;
-# warm the timed launch path first against cached binaries (issue #40).
+# Cold runners scan bash/perl on first exec beyond the 2s stall margin of the
+# first timed case; run the chain once so timed cases hit warm caches (mitigation
+# for issue #40).
 warmup_dir=$(mktemp -d "${TMPDIR:-/tmp}/sitter-warmup.XXXXXX")
 warmup_spy="$warmup_dir/spy.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$warmup_spy"
 chmod +x "$warmup_spy"
-FW_MODE=ok SITTER_HOME="$warmup_dir/home" SPY_FILE="$warmup_dir/spy" \
+FW_MODE=ok SITTER_POLL_INTERVAL=1 SITTER_HOME="$warmup_dir/home" SPY_FILE="$warmup_dir/spy" \
   "$SITTER" run --ledger "$warmup_dir/ledger.jsonl" --on-fail "$warmup_spy" \
     --stall-after 30 --timeout 60 --grace 0 -- "$FIXTURE" >/dev/null 2>&1 || true
+grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/null ||
+  printf 'WARN: launch-chain warm-up did not complete; issue #40 flake may return\n' >&2
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
