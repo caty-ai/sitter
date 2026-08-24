@@ -659,6 +659,8 @@ term_exiting_leader_still_kills_grandchild() {
 }
 
 symlinks_are_real() { local probe_dir; probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sitter-symlink-probe.XXXXXX"); : >"$probe_dir/t"; ln -s "$probe_dir/t" "$probe_dir/l" 2>/dev/null; local ok=1; [[ -L $probe_dir/l ]] && ok=0; rm -rf "$probe_dir"; return $ok; }
+chmod_denies_dir_write() { local probe_dir ok=1; probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sitter-chmod-dir-probe.XXXXXX"); mkdir "$probe_dir/d"; chmod 500 "$probe_dir/d"; ( : >"$probe_dir/d/t" ) 2>/dev/null || ok=0; chmod 700 "$probe_dir/d"; rm -rf "$probe_dir"; return $ok; }
+chmod_denies_read() { local probe_dir ok=1; probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sitter-chmod-read-probe.XXXXXX"); printf x >"$probe_dir/t"; chmod 000 "$probe_dir/t"; cat "$probe_dir/t" >/dev/null 2>&1 || ok=0; chmod 600 "$probe_dir/t"; rm -rf "$probe_dir"; return $ok; }
 
 ledger_symlink_is_refused() {
   if ! symlinks_are_real; then printf 'SKIP ledger_symlink_is_refused: no real symlink support\n' >&2; return 0; fi
@@ -1255,6 +1257,7 @@ aw_10_prepare_precedes_send() {
   [[ -e $marker ]]
 }
 aw_11_prepare_failure_prevents_send() {
+  if ! chmod_denies_dir_write; then printf 'SKIP aw_11_prepare_failure_prevents_send: chmod not enforced\n' >&2; return 0; fi
   local dir="$CASE_DIR/locked" marker="$CASE_DIR/sent" ledger
   ledger="$dir/l"
   mkdir "$dir"; chmod 500 "$dir"
@@ -1499,6 +1502,7 @@ aw_45_present_absent_diagnostic() {
   [[ $out == *disappeared* && $out != *'acked truth'* ]]
 }
 aw_46_unreadable_no_ack() {
+  if ! chmod_denies_read; then printf 'SKIP aw_46_unreadable_no_ack: chmod not enforced\n' >&2; return 0; fi
   aw_truth_setup old changed
   chmod 000 "$CASE_DIR/r"
   assert_exit 1 aw_watch "$CASE_DIR/h" "$CASE_DIR/l"
