@@ -1912,6 +1912,17 @@ ASK_WATCH_TESTS=(
   aw_81_malformed_del_reply_file_row_is_poison_consistently
 )
 
+# Cold CI runners can scan bash/perl on first exec beyond the 2s stall margin;
+# warm the timed launch path first against cached binaries (issue #40).
+warmup_dir=$(mktemp -d "${TMPDIR:-/tmp}/sitter-warmup.XXXXXX")
+warmup_spy="$warmup_dir/spy.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$warmup_spy"
+chmod +x "$warmup_spy"
+FW_MODE=ok SITTER_HOME="$warmup_dir/home" SPY_FILE="$warmup_dir/spy" \
+  "$SITTER" run --ledger "$warmup_dir/ledger.jsonl" --on-fail "$warmup_spy" \
+    --stall-after 30 --timeout 60 --grace 0 -- "$FIXTURE" >/dev/null 2>&1 || true
+rm -rf "$warmup_dir"
+
 PASS=0; FAIL=0; STARTED=$(date +%s)
 for test_name in normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart cooldown_crossing_restart_does_not_falsely_stall budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
