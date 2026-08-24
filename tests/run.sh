@@ -101,7 +101,8 @@ nonidempotent_stall_reason_contract() {
   # shellcheck disable=SC2016 # variables expand later, in the generated spy script
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
     'cat >>"$SPY_FILE"' \
-    'printf "ENV_SITTER_REASON=%s\n" "$SITTER_REASON" >>"$SPY_FILE"' >"$SPY"
+    'printf "ENV_SITTER_REASON=%s\n" "$SITTER_REASON" >>"$SPY_FILE"' \
+    'printf "ENV_SITTER_EVENT=%s\n" "$SITTER_EVENT" >>"$SPY_FILE"' >"$SPY"
   chmod +x "$SPY"
 
   assert_exit 1 run_case stall-reason -- sleep 30
@@ -110,7 +111,9 @@ nonidempotent_stall_reason_contract() {
   grep -q '"event":"end","status":"failed".*"reason":"stall"' "$ledger"
   assert_event_seq "$ledger" start stall fail end
   grep -q '"SITTER_REASON":"stall"' "$spy_file"
+  [[ $(grep -c '^ENV_SITTER_REASON=' "$spy_file") -eq 1 ]]
   grep -Fxq 'ENV_SITTER_REASON=stall' "$spy_file"
+  grep -Fxq 'ENV_SITTER_EVENT=end' "$spy_file"
 }
 
 # A cooldown must not count against the next attempt's initial stall window.

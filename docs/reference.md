@@ -136,8 +136,9 @@ standard input. The hook is fired for these reasons:
 | `nudge` | `sla_breach` | The first or second SLA window elapsed without an ack. |
 | `awaiting_human` | `awaiting_human` | A third elapsed SLA window requires human action. |
 
-Other rows reach the ledger without invoking the hook: the per-attempt `fail`
-event that precedes a restart, every `end killed` produced by the kill switch,
+Other rows reach the ledger without invoking the hook: `stall` and `restart`,
+the per-attempt `fail` event that precedes a restart or terminal
+non-idempotent `end`, every mid-run `end killed` produced by the kill switch,
 and `end success`. Filter on `SITTER_REASON` rather than on `SITTER_EVENT` —
 terminal failure and budget exhaustion both arrive as `end`.
 
@@ -155,9 +156,10 @@ never on `event` — an `event:"stall"` row can carry `reason:"timeout"`.
 | Path | Ledger rows | Hook delivery |
 | --- | --- | --- |
 | Non-idempotent attempt failure (`stall`, `timeout`, or `exit`) | `fail` has status `failed` and the attempt reason, followed by terminal `end` with status `failed` and the same reason. | Fires on `end` with `SITTER_REASON` set to that reason. |
-| Retry budget exhausted (idempotent) | Per-attempt `fail` rows retain their attempt reasons, but terminal `end` has both status and reason `budget_exhausted`. The per-attempt stall/timeout truth lives only in the `fail` rows. | Fires on `end` with `SITTER_REASON=budget_exhausted`, not the last attempt reason. |
-| Kill switch | Terminal `end` has status and reason `killed`, but carries no hook reason. | No hook fires for that `end`. |
-| Any `fail` row | Ledger-only, including the `fail` that precedes a terminal non-idempotent `end`. | Never invokes the hook. |
+| Retry budget exhausted (idempotent) | Per-attempt `fail` rows retain their attempt reasons, but terminal `end` has both status and reason `budget_exhausted`, masking the last attempt reason there. Detection `stall` rows and per-attempt `fail` rows retain the underlying attempt reason. | Fires on `end` with `SITTER_REASON=budget_exhausted`, not the last attempt reason. |
+| Kill switch | A kill switch present before launch appends `refused` with reason `killed` and no `end` row. A mid-run kill appends `fail` with reason `killed`, then terminal `end` with status and reason `killed`. | No hook fires for the pre-launch `refused` row or the mid-run `fail` / `end killed` rows. |
+| Any `stall` or `restart` row | Ledger-only. | Never invokes the hook. |
+| Any `fail` row | Ledger-only, including the `fail` that precedes a restart, the `fail` that precedes a terminal non-idempotent `end`, and the mid-run `fail` with reason `killed`. | Never invokes the hook. |
 
 Within one poll tick, detection precedence is kill switch, then timeout, then
 stall. A same-tick stall and kill therefore records `killed` with no `stall`

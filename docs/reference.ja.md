@@ -131,8 +131,9 @@ sweep のロックは `$SITTER_HOME` 配下にあるため、スケジューラ�
 | `nudge` | `sla_breach` | 1 回目または 2 回目の SLA 窓が ack なしで経過した。 |
 | `awaiting_human` | `awaiting_human` | 3 回目の SLA 窓経過。人間の対応が必要。 |
 
-これ以外の行は台帳には残りますがフックを起動しません: 再起動の前に出る
-試行ごとの `fail` イベント、キルスイッチによる `end killed`、そして
+これ以外の行は台帳には残りますがフックを起動しません: `stall` と
+`restart`、再起動の前や非冪等の terminal `end` の前に出る試行ごとの
+`fail` イベント、キルスイッチによる実行中の `end killed`、そして
 `end success` です。**判定は `SITTER_EVENT` ではなく `SITTER_REASON` で
 行ってください** — terminal 失敗もリトライ予算切れも、どちらも `end` として
 届きます。
@@ -152,9 +153,10 @@ run 系の `reason` は、将来の追加を許すオープンな文字列です
 | 経路 | 台帳に残る行 | フックへの通知 |
 | --- | --- | --- |
 | 非冪等の試行失敗（`stall` / `timeout` / `exit`） | `fail` は status が `failed`、reason がその試行理由となり、続く terminal `end` も status は `failed`、reason は同じ値になります。 | `end` で発火し、`SITTER_REASON` には同じ理由が入ります。 |
-| リトライ予算切れ（冪等） | 試行ごとの `fail` には各試行理由が残りますが、terminal `end` の status と reason はともに `budget_exhausted` です。試行ごとの stall/timeout という事実は `fail` 行にだけ残ります。 | 最後の試行理由ではなく、`SITTER_REASON=budget_exhausted` として `end` で発火します。 |
-| キルスイッチ | terminal `end` の status と reason は `killed` ですが、フック用の reason は渡されません。 | その `end` ではフックは発火しません。 |
-| すべての `fail` 行 | 非冪等の terminal `end` の直前にある `fail` も含め、台帳への記録専用です。 | フックは決して発火しません。 |
+| リトライ予算切れ（冪等） | 試行ごとの `fail` には各試行理由が残りますが、terminal `end` の status と reason はともに `budget_exhausted` となり、そこで最後の試行理由は隠れます。検出時の `stall` 行と試行ごとの `fail` 行には、元の試行理由が残ります。 | 最後の試行理由ではなく、`SITTER_REASON=budget_exhausted` として `end` で発火します。 |
+| キルスイッチ | 起動前に kill switch があると、reason が `killed` の `refused` が追記され、`end` 行は出ません。実行中に kill されると、reason が `killed` の `fail` が追記され、その後に status と reason が `killed` の terminal `end` が続きます。 | 起動前の `refused` 行でも、実行中の `fail` / `end killed` 行でも、フックは発火しません。 |
+| すべての `stall` / `restart` 行 | 台帳への記録専用です。 | フックは決して発火しません。 |
+| すべての `fail` 行 | 再起動の前にある `fail`、非冪等の terminal `end` の直前にある `fail`、および reason が `killed` の実行中 `fail` も含め、台帳への記録専用です。 | フックは決して発火しません。 |
 
 同じ poll tick では、キルスイッチ、timeout、stall の順に判定します。そのため
 stall と kill が同時に成立した場合は `killed` が記録され、`stall` 行は残りません。
