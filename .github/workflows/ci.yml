@@ -26,6 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash tests/run.sh
+      - if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        run: bash scripts/packaged-tarball-install-test.sh
   # The development machine is macOS and every lane runs the full suite
   # locally before a PR opens, so PR-time macOS coverage duplicates those
   # runs. macOS and Windows are merge gates on main pushes instead.
