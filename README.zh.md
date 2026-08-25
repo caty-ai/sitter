@@ -284,7 +284,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Caty
+[MIT](LICENSE) © 2026 Sho Jikumaru
 
 我们希望任何人都能使用它、修改它，并把它构建进自己的工具和服务里，所以选了 MIT。只要保留版权声明，其余一概不限制 —— 包括商用，也包括修改后的副本。
 
