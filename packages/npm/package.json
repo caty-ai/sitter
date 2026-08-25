@@ -38,5 +38,6 @@
     "darwin",
     "linux"
   ],
+  "author": "Sho Jikumaru",
   "license": "MIT"
 }

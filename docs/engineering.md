@@ -503,4 +503,4 @@ code.
 
 ## License
 
-[MIT](../LICENSE) © 2026 Caty
+[MIT](../LICENSE) © 2026 Sho Jikumaru

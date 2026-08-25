@@ -480,4 +480,4 @@ Python 3 があれば JSON 構文チェックも追加されます。
 
 ## ライセンス
 
-[MIT](../LICENSE) © 2026 Caty
+[MIT](../LICENSE) © 2026 Sho Jikumaru

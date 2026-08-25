@@ -284,7 +284,7 @@ Part of the **Caty AI family** — open tools for running a family of AI agents.
 
 ## License
 
-[MIT](LICENSE) © 2026 Caty
+[MIT](LICENSE) © 2026 Sho Jikumaru
 
 We want anyone to use it, change it, and build it into their own tools and services, so it is MIT. Keep the copyright notice and nothing else is restricted — commercial use included, modified copies included.
 
