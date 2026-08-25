@@ -25,6 +25,9 @@
 🔧 [เอกสารสำหรับวิศวกร](docs/engineering.md) (ภาษาอังกฤษ) ｜ 📘 [ข้อกำหนดฉบับเต็ม](docs/reference.md) (ภาษาอังกฤษ)
 
 </div>
+<!-- repo-state:begin (generated; do not edit) -->
+<p align="center"><sub>generation: <code>b9fd5b2</code> (2026-08-25T15:11:50Z) · verify: <a href="https://api.github.com/repos/caty-ai/sitter/commits/feat/repo-state-caller-50">API HEAD</a> · <a href="./status.json">status.json</a></sub></p>
+<!-- repo-state:end -->
 
 ---
 
