@@ -136,10 +136,37 @@ standard input. The hook is fired for these reasons:
 | `nudge` | `sla_breach` | The first or second SLA window elapsed without an ack. |
 | `awaiting_human` | `awaiting_human` | A third elapsed SLA window requires human action. |
 
-Other rows reach the ledger without invoking the hook: the per-attempt `fail`
-event that precedes a restart, every `end killed` produced by the kill switch,
-and `end success`. Filter on `SITTER_REASON` rather than on `SITTER_EVENT` —
-terminal failure and budget exhaustion both arrive as `end`.
+No other run-family row invokes the hook: `start`, `stall`, `restart`, every
+`fail` row, `refused` with reason `killed` (a kill switch observed at
+admission), every `end killed`, and `end success` are all ledger-only. Filter
+on `SITTER_REASON` rather than on `SITTER_EVENT` — terminal failure and budget
+exhaustion both arrive as `end`.
+
+### Ledger reason contract (run family)
+
+The run-family `reason` field is an open string vocabulary. Consumers must not
+whitelist a closed set: currently emitted values are `exit`, `stall`,
+`timeout`, `killed`, `budget_exhausted`, `success`, `denied`, and `""` on
+`start` rows. The ask/sweep hook paths additionally use `sla_breach` and
+`awaiting_human`.
+
+The `event` field names the row family; discriminate the kill kind on `reason`,
+never on `event` — an `event:"stall"` row can carry `reason:"timeout"`.
+
+| Path | Ledger rows | Hook delivery |
+| --- | --- | --- |
+| Non-idempotent attempt failure (`stall`, `timeout`, or `exit`) | `fail` has status `failed` and the attempt reason, followed by terminal `end` with status `failed` and the same reason. | Fires on `end` with `SITTER_REASON` set to that reason. |
+| Retry budget exhausted (idempotent) | Per-attempt `fail` rows retain their attempt reasons, but terminal `end` has both status and reason `budget_exhausted`, masking the last attempt reason there. Detection `stall` rows and per-attempt `fail` rows retain the underlying attempt reason. | Fires on `end` with `SITTER_REASON=budget_exhausted`, not the last attempt reason. |
+| Kill switch | Observed at initial admission: a single `refused` row with reason `killed`, no `end` row. Observed between attempts (at the loop top — including after a persisted cooldown — or right after a `restart` row): a terminal `end` with status and reason `killed`, no `fail` row. Observed mid-attempt: `fail` with reason `killed`, then the terminal `end killed`. | None of these rows invoke the hook. |
+| Any `stall` or `restart` row | Ledger-only. | Never invokes the hook. |
+| Any `fail` row | Ledger-only, including the `fail` that precedes a restart, the `fail` that precedes a terminal non-idempotent `end`, and the mid-run `fail` with reason `killed`. | Never invokes the hook. |
+
+Within one poll tick, detection precedence is kill switch, then timeout, then
+stall. A same-tick stall and kill therefore records `killed` with no `stall`
+row.
+
+Future detection mechanisms may add reason values. Such additions are
+additive; consumers must treat unknown values as opaque.
 
 See [the drop-file hook example](../examples/on-fail-dropfile.sh) for a
 deliberately tiny adapter that appends escalations to a monitored inbox file.

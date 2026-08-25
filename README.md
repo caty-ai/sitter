@@ -176,7 +176,7 @@ This example only **writes to files** — nothing pops up on screen. To get a de
 
 **Know what counts as "frozen"**
 
-sitter treats a job as frozen when it produces **no output at all — screen or log — for 15 minutes**, and it stops the job (with a hard limit of four hours). If you are watching work that stays silent until it finishes, tell sitter to use the time limit only.
+sitter treats a job as frozen when it produces **no output at all — screen or log — for 15 minutes**, and it stops the job (with a hard limit of four hours). If you are watching work that stays silent until it finishes, tell sitter to use the time limit only. The exact ledger fields and hook values for these outcomes are defined in the [ledger reason contract](docs/reference.md#ledger-reason-contract-run-family).
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
@@ -277,7 +277,7 @@ Part of the **Caty AI family** — open tools for running a family of AI agents.
 
 - **CI** — the badge above is live: every push to main and every pull request runs the full fault-injection suite (the case count is machine-reported by `make test`)
 - **Verified environments** — Ubuntu gates every pull request; macOS runs on every push to main; Windows (Git Bash) is a best-effort lane
-- **Maturity** — v0.3.0; the four v0 verbs (`run` / `expect` / `ack` / `sweep`) are spec-frozen in docs/requirements-v0.md, and `ask` / `watch` are pinned by docs/specs/prd-v0.2-ask-watch.md (audited in v0.2.0)
+- **Maturity** — v0.3.1; the four v0 verbs (`run` / `expect` / `ack` / `sweep`) are spec-frozen in docs/requirements-v0.md, and `ask` / `watch` are pinned by docs/specs/prd-v0.2-ask-watch.md (audited in v0.2.0)
 - **Known limitations** — the denylist is an accident guard, not a security wall; retries happen only for jobs you explicitly declared idempotent
 
 ---

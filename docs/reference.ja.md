@@ -131,11 +131,38 @@ sweep のロックは `$SITTER_HOME` 配下にあるため、スケジューラ�
 | `nudge` | `sla_breach` | 1 回目または 2 回目の SLA 窓が ack なしで経過した。 |
 | `awaiting_human` | `awaiting_human` | 3 回目の SLA 窓経過。人間の対応が必要。 |
 
-これ以外の行は台帳には残りますがフックを起動しません: 再起動の前に出る
-試行ごとの `fail` イベント、キルスイッチによる `end killed`、そして
-`end success` です。**判定は `SITTER_EVENT` ではなく `SITTER_REASON` で
+run 系でフックを起動する行は上の表がすべてです。`start`、`stall`、
+`restart`、すべての `fail` 行、reason が `killed` の `refused`
+（起動受付時に kill switch を観測した場合）、すべての `end killed`、そして
+`end success` は、いずれも台帳への記録専用です。**判定は `SITTER_EVENT` ではなく `SITTER_REASON` で
 行ってください** — terminal 失敗もリトライ予算切れも、どちらも `end` として
 届きます。
+
+### 台帳の reason 契約（run 系）
+
+run 系の `reason` は、将来の追加を許すオープンな文字列です。値を固定リストとして
+ホワイトリスト化してはいけません。現在出力される値は `exit`、`stall`、
+`timeout`、`killed`、`budget_exhausted`、`success`、`denied`、および
+`start` 行の `""` です。ask/sweep のフック経路では、これに加えて
+`sla_breach` と `awaiting_human` が使われます。
+
+`event` は行の種類を表すフィールドです。停止理由の種類は `event` ではなく、必ず
+`reason` で判定してください。たとえば `event:"stall"` の行でも
+`reason:"timeout"` を持つことがあります。
+
+| 経路 | 台帳に残る行 | フックへの通知 |
+| --- | --- | --- |
+| 非冪等の試行失敗（`stall` / `timeout` / `exit`） | `fail` は status が `failed`、reason がその試行理由となり、続く terminal `end` も status は `failed`、reason は同じ値になります。 | `end` で発火し、`SITTER_REASON` には同じ理由が入ります。 |
+| リトライ予算切れ（冪等） | 試行ごとの `fail` には各試行理由が残りますが、terminal `end` の status と reason はともに `budget_exhausted` となり、そこで最後の試行理由は隠れます。検出時の `stall` 行と試行ごとの `fail` 行には、元の試行理由が残ります。 | 最後の試行理由ではなく、`SITTER_REASON=budget_exhausted` として `end` で発火します。 |
+| キルスイッチ | 起動受付時に観測: reason が `killed` の `refused` 1 行のみで、`end` 行は出ません。試行と試行の間に観測（ループ先頭 — 永続 cooldown 明けを含む — または `restart` 行の直後）: status と reason が `killed` の terminal `end` のみで、`fail` 行は出ません。試行の実行中に観測: reason が `killed` の `fail` の後に terminal `end killed` が続きます。 | これらの行ではフックは発火しません。 |
+| すべての `stall` / `restart` 行 | 台帳への記録専用です。 | フックは決して発火しません。 |
+| すべての `fail` 行 | 再起動の前にある `fail`、非冪等の terminal `end` の直前にある `fail`、および reason が `killed` の実行中 `fail` も含め、台帳への記録専用です。 | フックは決して発火しません。 |
+
+同じ poll tick では、キルスイッチ、timeout、stall の順に判定します。そのため
+stall と kill が同時に成立した場合は `killed` が記録され、`stall` 行は残りません。
+
+将来、検出方法の追加にともなって reason の値が増える可能性があります。これは
+追加互換の変更であり、未知の値は解釈せず不透明な値として扱ってください。
 
 意図的に極小のアダプタ例として
 [drop-file フック example](../examples/on-fail-dropfile.sh) を参照してください。
