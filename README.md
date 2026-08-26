@@ -151,10 +151,11 @@ mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/caty-ai/sitter/main/sitter -o ~/.local/bin/sitter
 chmod +x ~/.local/bin/sitter
 export PATH="$HOME/.local/bin:$PATH"
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh — the macOS default
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash — the Linux and WSL2 default
 ```
 
-The last two lines let you call the tool by typing `sitter` (the first for the terminal you have open, the second for every terminal after that). On Linux without `zsh`, read `~/.zshrc` as `~/.bashrc`.
+The last three lines let you call the tool by typing `sitter`: the `export` line works in the terminal you have open, and the two `echo` lines make it stick for every terminal after that — one for zsh (what a Mac uses), one for bash (what Linux and WSL2 use). Pasting both is harmless; the one for the shell you don't use is simply never read.
 
 **2. Check that it works**
 
@@ -175,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 Replace everything after `--` with **the command you normally type**. Whenever that work fails or freezes, a note is appended to `~/sitter-alerts.txt`. The record of what happened stays in `~/.sitter/runs.jsonl`. (Both are machine-readable formats, so each line looks like one long string.)
 
-This example only **writes to files** — nothing pops up on screen. To get a desktop notification or a Slack message instead, you change what `--on-fail` runs. If you are not sure how, ask your AI agent for "a sitter notification that shows up in the macOS notification centre".
+This example only **writes to files** — nothing pops up on screen. To get a desktop notification or a Slack message instead, you change what `--on-fail` runs. If you are not sure how, ask your AI agent for "a sitter notification that shows up in the macOS notification centre" — or, on Linux and WSL2, "a sitter notification through `notify-send`" (on WSL2 without a Linux desktop, ask for a Windows toast instead, e.g. through PowerShell's BurntToast).
 
 **Know what counts as "frozen"**
 
@@ -192,7 +193,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **It says `sitter: command not found`**
 
-The last two lines of step 1 may not have taken effect. Run this one line, then try again.
+The last three lines of step 1 may not have taken effect. Run this one line, then try again.
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"

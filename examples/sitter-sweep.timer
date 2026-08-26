@@ -1,0 +1,11 @@
+# systemd user timer — fires sitter-sweep.service every 5 minutes
+# (the same cadence as the launchd StartInterval in ai.caty.sitter.sweep.plist).
+[Unit]
+Description=Run sitter sweep every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+# systemd user service — the Linux/WSL2 counterpart of ai.caty.sitter.sweep.plist.
+# Replace every /path/to/... value for this operator.
+# Install together with sitter-sweep.timer (install steps: docs/engineering.md, "Ask / watch").
+[Unit]
+Description=sitter sweep (nudge overdue replies, escalate to a human)
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/sitter sweep --once --ledger /path/to/runs.jsonl --on-fail /path/to/on-fail-hook.sh

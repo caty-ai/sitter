@@ -255,7 +255,7 @@ flowchart LR
     W --> OUT["exit / stall / timeout"]
     RUN -- "append events" --> L[("runs.jsonl<br/>(ledger)")]
     EA["sitter expect / ack"] -- "record" --> L
-    SCHED["external scheduler<br/>(launchd / cron)"] --> SW["sitter sweep --once"]
+    SCHED["external scheduler<br/>(launchd / systemd / cron)"] --> SW["sitter sweep --once"]
     SW -- "replay" --> L
     SW -- "escalate" --> HOOK["--on-fail hook<br/>(notify a human)"]
 ```
@@ -311,7 +311,7 @@ Three verbs:
 
 - `expect` — write down "I asked X a question; an answer is due within the SLA"
 - `ack` — write down "the answer arrived" and clear the entry
-- `sweep` — run every few minutes by launchd or cron, it walks every open
+- `sweep` — run every few minutes by launchd, systemd, or cron, it walks every open
   expectation, nudges the overdue ones (through your `--on-fail` hook), nudges
   a second time, and finally escalates to `awaiting_human`
 
@@ -352,7 +352,8 @@ sitter watch --once --ledger "$ledger"
 # stdout: acked <expect_id>
 ```
 
-Install the included [LaunchAgent example](../examples/ai.caty.sitter.sweep.plist)
+On macOS, install the included
+[LaunchAgent example](../examples/ai.caty.sitter.sweep.plist)
 by copying it to `~/Library/LaunchAgents` after replacing its placeholder
 paths, then load it with:
 
@@ -360,6 +361,30 @@ paths, then load it with:
 cp examples/ai.caty.sitter.sweep.plist ~/Library/LaunchAgents/
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ai.caty.sitter.sweep.plist
 ```
+
+On Linux and WSL2, the equivalent systemd user units ship as
+[sitter-sweep.service](../examples/sitter-sweep.service) and
+[sitter-sweep.timer](../examples/sitter-sweep.timer) — replace their
+placeholder paths, then install and start them with:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp examples/sitter-sweep.service examples/sitter-sweep.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now sitter-sweep.timer
+```
+
+WSL2 caveats. On the current default Ubuntu (installed with `wsl --install`)
+systemd is already on; on older or other distros, enable it once by editing
+`/etc/wsl.conf` with sudo (`systemd=true` under `[boot]`) and restarting WSL
+from PowerShell (`wsl.exe --shutdown`). Without systemd, cron does not
+autostart either — start it each boot with `sudo service cron start` (with
+systemd on, cron starts by itself). Two things can still stop a sweep
+silently: user timers stop when your last WSL session closes even while the
+VM stays up, so run `loginctl enable-linger "$USER"` once if sweeps must
+continue unattended; and any in-WSL scheduler only runs while the WSL VM
+itself is running — the Task Scheduler variant in
+[Windows support](#windows-support) survives that too.
 
 The equivalent cron entry is:
 
@@ -402,9 +427,9 @@ Linux build that CI keeps green — install and use it as on Linux, keeping the
 ledger and `$SITTER_HOME` on the Linux filesystem (e.g. under `~`), not under
 `/mnt/c`, so file locking and mtime semantics stay POSIX.
 
-Schedule the sweep with cron inside WSL (see the cron line above; on recent
-WSL enable systemd/cron once with `sudo service cron start` or systemd units),
-or drive it from Windows Task Scheduler:
+Schedule the sweep inside WSL with the shipped systemd user timer or the cron
+line (both above — read the WSL2 caveats there first), or drive it from
+Windows Task Scheduler:
 
 ```
 schtasks /Create /SC MINUTE /MO 5 /TN sitter-sweep ^
