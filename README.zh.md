@@ -26,7 +26,7 @@
 
 </div>
 <!-- repo-state:begin (generated; do not edit) -->
-<p align="center"><sub>generation: <code>b9fd5b2</code> (2026-08-25T15:11:50Z) · verify: <a href="https://api.github.com/repos/caty-ai/sitter/commits/feat/repo-state-caller-50">API HEAD</a> · <a href="./status.json">status.json</a></sub></p>
+<p align="center"><sub>generation: <code>85feb6f</code> (2026-08-26T18:03:57Z) · verify: <a href="https://api.github.com/repos/caty-ai/sitter/commits/main">API HEAD</a> · <a href="./status.json">status.json</a></sub></p>
 <!-- repo-state:end -->
 
 ---
