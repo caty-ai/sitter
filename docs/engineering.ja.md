@@ -241,7 +241,7 @@ flowchart LR
     W --> OUT["終了 / ストール / タイムアウト"]
     RUN -- "イベント追記" --> L[("runs.jsonl<br/>（台帳）")]
     EA["sitter expect / ack"] -- "記録" --> L
-    SCHED["外部スケジューラ<br/>（launchd / cron）"] --> SW["sitter sweep --once"]
+    SCHED["外部スケジューラ<br/>（launchd / systemd / cron）"] --> SW["sitter sweep --once"]
     SW -- "再生" --> L
     SW -- "エスカレーション" --> HOOK["--on-fail フック<br/>（人間へ通知）"]
 ```
@@ -293,7 +293,7 @@ sitter run --ledger <台帳ファイル> --on-fail <通知コマンド> -- <見�
 
 - `expect` = 「X に質問した。期限（SLA）以内に返事が来るはず」とメモする
 - `ack` = 「返事が来た」とメモして消し込む
-- `sweep` = launchd や cron で数分おきに走り、未解決の返事待ちを総ざらいして
+- `sweep` = launchd・systemd・cron で数分おきに走り、未解決の返事待ちを総ざらいして
   期限切れに催促（あなたの `--on-fail` 通知経由）→ 2 回目の催促 → 最後は
   「人間判断待ち（`awaiting_human`）」としてエスカレーション
 
@@ -352,12 +352,18 @@ systemctl --user daemon-reload
 systemctl --user enable --now sitter-sweep.timer
 ```
 
-WSL2 の注意: systemd も cron も素の状態では動いていません。`/etc/wsl.conf` の
-`[boot]` に `systemd=true` を書いて WSL を再起動（`wsl --shutdown`）すれば
-systemd が有効になります。cron を使い続ける場合は、起動のたびに
-`sudo service cron start` でデーモンを立ち上げてください。どちらにせよ
-スケジューラが動くのは WSL の VM が動いている間だけです — それも越えたい
-場合は [Windows 対応](#windows-対応)のタスクスケジューラ経由を使います。
+WSL2 の注意。現行の既定 Ubuntu（`wsl --install` で入れたもの）では systemd は
+最初から有効です。古い/他のディストリビューションでは、`/etc/wsl.conf` を
+sudo で編集して `[boot]` に `systemd=true` を書き、PowerShell 側から WSL を
+再起動（`wsl.exe --shutdown`）すれば一度で有効になります。systemd が無い
+環境では cron も自動起動しません — 起動のたびに `sudo service cron start` で
+立ち上げてください（systemd が有効なら cron は勝手に起動します）。それでも
+sweep が黙って止まる形が 2 つあります: ユーザータイマーは VM が生きていても
+最後の WSL セッションを閉じると止まるので、無人でも回し続けたい場合は
+`loginctl enable-linger "$USER"` を一度実行しておくこと。そして WSL 内の
+スケジューラはどれも WSL の VM が動いている間しか動きません — それも
+越えたい場合は [Windows 対応](#windows-対応)のタスクスケジューラ経由を
+使います。
 
 cron での等価な 1 行はこちらです:
 
@@ -399,7 +405,7 @@ Windows では [WSL](https://learn.microsoft.com/ja-jp/windows/wsl/) （Windows 
 mtime の意味論が POSIX のまま保たれます。
 
 sweep のスケジュールは WSL 内の同梱 systemd ユーザータイマーか cron 行
-（どちらも上記。WSL2 ではどちらのスケジューラも素では動かない点に注意）、
+（どちらも上記。先に WSL2 の注意を読んでください）、
 または Windows のタスクスケジューラから駆動できます:
 
 ```

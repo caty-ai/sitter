@@ -255,7 +255,7 @@ flowchart LR
     W --> OUT["exit / stall / timeout"]
     RUN -- "append events" --> L[("runs.jsonl<br/>(ledger)")]
     EA["sitter expect / ack"] -- "record" --> L
-    SCHED["external scheduler<br/>(launchd / cron)"] --> SW["sitter sweep --once"]
+    SCHED["external scheduler<br/>(launchd / systemd / cron)"] --> SW["sitter sweep --once"]
     SW -- "replay" --> L
     SW -- "escalate" --> HOOK["--on-fail hook<br/>(notify a human)"]
 ```
@@ -311,7 +311,7 @@ Three verbs:
 
 - `expect` — write down "I asked X a question; an answer is due within the SLA"
 - `ack` — write down "the answer arrived" and clear the entry
-- `sweep` — run every few minutes by launchd or cron, it walks every open
+- `sweep` — run every few minutes by launchd, systemd, or cron, it walks every open
   expectation, nudges the overdue ones (through your `--on-fail` hook), nudges
   a second time, and finally escalates to `awaiting_human`
 
@@ -374,11 +374,16 @@ systemctl --user daemon-reload
 systemctl --user enable --now sitter-sweep.timer
 ```
 
-WSL2 caveat: neither systemd nor cron runs out of the box. Enable systemd
-once by putting `systemd=true` under `[boot]` in `/etc/wsl.conf` and
-restarting WSL (`wsl --shutdown`), or — if you stay on cron — start the
-daemon each boot with `sudo service cron start`. Either way the scheduler
-only runs while the WSL VM itself is running; the Task Scheduler variant in
+WSL2 caveats. On the current default Ubuntu (installed with `wsl --install`)
+systemd is already on; on older or other distros, enable it once by editing
+`/etc/wsl.conf` with sudo (`systemd=true` under `[boot]`) and restarting WSL
+from PowerShell (`wsl.exe --shutdown`). Without systemd, cron does not
+autostart either — start it each boot with `sudo service cron start` (with
+systemd on, cron starts by itself). Two things can still stop a sweep
+silently: user timers stop when your last WSL session closes even while the
+VM stays up, so run `loginctl enable-linger "$USER"` once if sweeps must
+continue unattended; and any in-WSL scheduler only runs while the WSL VM
+itself is running — the Task Scheduler variant in
 [Windows support](#windows-support) survives that too.
 
 The equivalent cron entry is:
@@ -423,8 +428,8 @@ ledger and `$SITTER_HOME` on the Linux filesystem (e.g. under `~`), not under
 `/mnt/c`, so file locking and mtime semantics stay POSIX.
 
 Schedule the sweep inside WSL with the shipped systemd user timer or the cron
-line (both above, with the WSL2 enablement caveat — neither scheduler runs
-out of the box), or drive it from Windows Task Scheduler:
+line (both above — read the WSL2 caveats there first), or drive it from
+Windows Task Scheduler:
 
 ```
 schtasks /Create /SC MINUTE /MO 5 /TN sitter-sweep ^
