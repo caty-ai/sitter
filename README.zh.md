@@ -151,10 +151,11 @@ mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/caty-ai/sitter/main/sitter -o ~/.local/bin/sitter
 chmod +x ~/.local/bin/sitter
 export PATH="$HOME/.local/bin:$PATH"
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh — macOS 的默认 shell
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash — Linux 和 WSL2 的默认 shell
 ```
 
-最后两行让你可以直接输入 `sitter` 来调用这个工具（第一行对当前打开的终端生效，第二行对以后打开的每个终端生效）。在没有 `zsh` 的 Linux 上，把 `~/.zshrc` 换成 `~/.bashrc`。
+最后三行让你可以直接输入 `sitter` 来调用这个工具：`export` 行对当前打开的终端生效，两条 `echo` 行让它对以后的每个终端都生效 —— 一条给 zsh（Mac 的默认），一条给 bash（Linux 和 WSL2 的默认）。两条都粘贴没有任何坏处；不属于你所用 shell 的那条只是永远不会被读取。
 
 **2. 确认它能用**
 
@@ -175,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 把 `--` 后面的内容换成**你平时输入的那条命令**。之后只要那份工作失败或卡住，就会有一条记录追加到 `~/sitter-alerts.txt`。发生了什么的完整记录留在 `~/.sitter/runs.jsonl` 里。（两者都是机器可读的格式，所以每一行看起来像一长串字符。）
 
-这个例子只会**往文件里写** —— 屏幕上不会弹出任何东西。如果你想改成桌面通知或 Slack 消息，只需要改 `--on-fail` 运行的内容。不知道怎么做的话，就问你的 AI 代理：“给我一个能在 macOS 通知中心里弹出来的 sitter 通知”。
+这个例子只会**往文件里写** —— 屏幕上不会弹出任何东西。如果你想改成桌面通知或 Slack 消息，只需要改 `--on-fail` 运行的内容。不知道怎么做的话，就问你的 AI 代理：“给我一个能在 macOS 通知中心里弹出来的 sitter 通知”；在 Linux 和 WSL2 上则问“用 `notify-send` 发 sitter 通知”（在没有 Linux 桌面的 WSL2 上，改为请它做一个 Windows toast 通知，例如通过 PowerShell 的 BurntToast）。
 
 **弄清什么算“卡住”**
 
@@ -192,7 +193,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **提示 `sitter: command not found`**
 
-第 1 步的最后两行可能没有生效。运行下面这一行，然后再试一次。
+第 1 步的最后三行可能没有生效。运行下面这一行，然后再试一次。
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"

@@ -151,10 +151,11 @@ mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/caty-ai/sitter/main/sitter -o ~/.local/bin/sitter
 chmod +x ~/.local/bin/sitter
 export PATH="$HOME/.local/bin:$PATH"
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh — Mac の標準シェル
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash — Linux / WSL2 の標準シェル
 ```
 
-最後の 2 行は「`sitter` と打つだけで呼び出せるようにする」設定です（上が今開いているターミナル用、下が次回以降用）。Linux で `zsh` を使っていない場合は、`~/.zshrc` を `~/.bashrc` に読み替えてください。
+最後の 3 行は「`sitter` と打つだけで呼び出せるようにする」設定です。`export` の行は今開いているターミナル用、`echo` の 2 行は次回以降のターミナル用 — 上が zsh（Mac の標準）、下が bash（Linux / WSL2 の標準）です。両方貼り付けても害はありません。使っていないシェルの分は、単に読まれないだけです。
 
 **2. 動くか試す**
 
@@ -175,7 +176,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 `--` の後ろを、**いつもターミナルで打っている命令**に置き換えて使います。作業が失敗したり固まったりしたときだけ、`~/sitter-alerts.txt` にお知らせが追記されます。何が起きたかの記録は `~/.sitter/runs.jsonl` に残ります（どちらも機械向けの形式なので、1 行が長い文字列に見えます）。
 
-この例では**ファイルに書き残すだけ**で、画面にポップアップは出ません。デスクトップ通知や Slack に飛ばしたいときは、`--on-fail` の中身を差し替えます。書き方が分からなければ、AI エージェントに「sitter の通知を Mac の通知センターに出したい」と頼めば作ってもらえます。
+この例では**ファイルに書き残すだけ**で、画面にポップアップは出ません。デスクトップ通知や Slack に飛ばしたいときは、`--on-fail` の中身を差し替えます。書き方が分からなければ、AI エージェントに「sitter の通知を Mac の通知センターに出したい」と頼めば作ってもらえます。Linux / WSL2 なら「sitter の通知を `notify-send` で出したい」と頼んでください（Linux デスクトップのない WSL2 では、PowerShell の BurntToast などによる Windows トースト通知を頼むのが確実です）。
 
 **「固まった」と判断される条件を知っておいてください**
 
@@ -192,7 +193,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 
 **`sitter: command not found` と出る**
 
-手順 1 の最後の 2 行が実行できていない可能性があります。次の 1 行を実行してから、もう一度試してください。
+手順 1 の最後の 3 行が実行できていない可能性があります。次の 1 行を実行してから、もう一度試してください。
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"

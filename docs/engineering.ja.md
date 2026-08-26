@@ -331,7 +331,7 @@ sitter watch --once --ledger "$ledger"
 # stdout: acked <expect_id>
 ```
 
-同梱の [LaunchAgent example](../examples/ai.caty.sitter.sweep.plist) を使うには、
+macOS では、同梱の [LaunchAgent example](../examples/ai.caty.sitter.sweep.plist) を使います。
 プレースホルダのパスを書き換えてから `~/Library/LaunchAgents` へコピーし、
 ロードします:
 
@@ -339,6 +339,25 @@ sitter watch --once --ledger "$ledger"
 cp examples/ai.caty.sitter.sweep.plist ~/Library/LaunchAgents/
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ai.caty.sitter.sweep.plist
 ```
+
+Linux / WSL2 では、等価な systemd ユーザーユニットを
+[sitter-sweep.service](../examples/sitter-sweep.service) と
+[sitter-sweep.timer](../examples/sitter-sweep.timer) として同梱しています。
+プレースホルダのパスを書き換えてから、インストールして起動します:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp examples/sitter-sweep.service examples/sitter-sweep.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now sitter-sweep.timer
+```
+
+WSL2 の注意: systemd も cron も素の状態では動いていません。`/etc/wsl.conf` の
+`[boot]` に `systemd=true` を書いて WSL を再起動（`wsl --shutdown`）すれば
+systemd が有効になります。cron を使い続ける場合は、起動のたびに
+`sudo service cron start` でデーモンを立ち上げてください。どちらにせよ
+スケジューラが動くのは WSL の VM が動いている間だけです — それも越えたい
+場合は [Windows 対応](#windows-対応)のタスクスケジューラ経由を使います。
 
 cron での等価な 1 行はこちらです:
 
@@ -379,9 +398,9 @@ Windows では [WSL](https://learn.microsoft.com/ja-jp/windows/wsl/) （Windows 
 なく Linux ファイルシステム側（`~` など）に置くこと。ファイルロックと
 mtime の意味論が POSIX のまま保たれます。
 
-sweep のスケジュールは WSL 内の cron（上記の cron 行。最近の WSL では
-`sudo service cron start` か systemd unit で cron を一度有効化）、または
-Windows のタスクスケジューラから駆動できます:
+sweep のスケジュールは WSL 内の同梱 systemd ユーザータイマーか cron 行
+（どちらも上記。WSL2 ではどちらのスケジューラも素では動かない点に注意）、
+または Windows のタスクスケジューラから駆動できます:
 
 ```
 schtasks /Create /SC MINUTE /MO 5 /TN sitter-sweep ^
