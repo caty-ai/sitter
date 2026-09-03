@@ -186,6 +186,18 @@ sitter は、**画面にもログにも 15 分まったく出力がない作業*
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo 完了'
 ```
 
+作業自体は無言でも、ラッパーが低コストで正常性を確認できるなら、`--heartbeat-file` でストール保護を維持できます。heartbeat ファイルは監視する run ごとに 1 つ用意し、複数の run で決して共有しないでください。mtime は秒単位で、sitter は 15 秒ごとに確認するため、ラッパーは `--stall-after` の少なくとも 2 倍の頻度で touch してください。
+
+```sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+```
+
+| 状況 | 使う設定 |
+| --- | --- |
+| 普段は出力するが、ときどき長時間無言になる | `--stall-after` を延ばす |
+| 完了まで無言で、途中の正常性を確認できるものがない | `--stall-after 0 --timeout <上限>` |
+| 無言だが、低コストで正常性を確認できるものがある | ラッパーと `--heartbeat-file` を使い、`--stall-after` と `--timeout` の両方を残す |
+
 <details>
 <summary>うまくいかないときは</summary>
 

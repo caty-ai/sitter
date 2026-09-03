@@ -13,7 +13,7 @@ SITTER_VERSION='0.3.1'
 
 usage() {
   cat <<'EOF'
-usage: sitter run --ledger PATH --on-fail CMD [options] -- command [args...]
+usage: sitter run --ledger PATH --on-fail CMD [--stall-after SEC] [--heartbeat-file PATH] [options] -- command [args...]
        sitter expect --ledger PATH --on-fail CMD --id EXPECT_ID [options]
        sitter ack --ledger PATH --id EXPECT_ID [--detail TEXT]
        sitter sweep --once --ledger PATH --on-fail CMD
@@ -1404,17 +1404,35 @@ sleep_watching_kill() {
 }
 
 launch_attempt() {
-  local started now mtime age child_state remaining sleep_for
+  local started now mtime age child_state remaining sleep_for heartbeat_mtime log_age heartbeat_age heartbeat_available
   mkdir -p "$(dirname "$LOG_PATH")"; chmod 700 "$(dirname "$LOG_PATH")"
   : >>"$LOG_PATH"
   touch -- "$LOG_PATH" 2>/dev/null || true
+  if [[ $HEARTBEAT_FILE_SET == true ]]; then
+    if [[ -L $HEARTBEAT_FILE || ( -e $HEARTBEAT_FILE && ! -f $HEARTBEAT_FILE ) ]] \
+       || ! touch -- "$HEARTBEAT_FILE" 2>/dev/null \
+       || [[ ! -f $HEARTBEAT_FILE || -L $HEARTBEAT_FILE ]]; then
+      printf 'sitter: heartbeat file is unavailable before attempt\n' >&2
+      ATTEMPT_EXIT=1; ATTEMPT_REASON='exit'
+      return 1
+    fi
+  fi
   CHILD_SETSID=false
   if command -v perl >/dev/null 2>&1; then
-    perl -MPOSIX=setsid,_exit -e 'setsid() or _exit(127); exec { $ARGV[0] } @ARGV or _exit(127)' -- "${COMMAND[@]}" >>"$LOG_PATH" 2>&1 &
+    if [[ $HEARTBEAT_FILE_SET == true ]]; then
+      # shellcheck disable=SC2016 # the single-quoted program is evaluated by Perl
+      env SITTER_HEARTBEAT_FILE="$HEARTBEAT_FILE" perl -MPOSIX=setsid,_exit -e 'setsid() or _exit(127); exec { $ARGV[0] } @ARGV or _exit(127)' -- "${COMMAND[@]}" >>"$LOG_PATH" 2>&1 &
+    else
+      perl -MPOSIX=setsid,_exit -e 'setsid() or _exit(127); exec { $ARGV[0] } @ARGV or _exit(127)' -- "${COMMAND[@]}" >>"$LOG_PATH" 2>&1 &
+    fi
     CHILD_SETSID=true
   else
     # Best-effort fallback: without perl, retain the direct-child launch tier.
-    ( exec "${COMMAND[@]}" ) >>"$LOG_PATH" 2>&1 &
+    if [[ $HEARTBEAT_FILE_SET == true ]]; then
+      ( exec env SITTER_HEARTBEAT_FILE="$HEARTBEAT_FILE" "${COMMAND[@]}" ) >>"$LOG_PATH" 2>&1 &
+    else
+      ( exec "${COMMAND[@]}" ) >>"$LOG_PATH" 2>&1 &
+    fi
   fi
   CHILD_PID=$!
   started=$(now_epoch)
@@ -1445,7 +1463,29 @@ launch_attempt() {
       # A stat failure is transient infrastructure uncertainty, not a stale log.
       if mtime=$(file_mtime "$LOG_PATH") && is_uint "$mtime"; then
         age=$((now - mtime))
-        if ((age >= STALL_AFTER)); then
+        if [[ $HEARTBEAT_FILE_SET == true ]]; then
+          log_age=$age
+          heartbeat_available=false
+          # A missing, swapped, or unreadable heartbeat contributes nothing;
+          # the log remains the fail-closed stall clock for this poll.
+          if [[ -f $HEARTBEAT_FILE && ! -L $HEARTBEAT_FILE ]] \
+             && heartbeat_mtime=$(file_mtime "$HEARTBEAT_FILE") \
+             && is_uint "$heartbeat_mtime"; then
+            heartbeat_available=true
+            heartbeat_age=$((now - heartbeat_mtime))
+            ((heartbeat_mtime > mtime)) && age=$heartbeat_age
+          fi
+          if ((age >= STALL_AFTER)); then
+            if [[ $heartbeat_available == true ]]; then
+              emit_event stall killed "$ATTEMPT" "pid alive, log mtime frozen ${log_age}s, heartbeat frozen ${heartbeat_age}s" null stall
+            else
+              emit_event stall killed "$ATTEMPT" "pid alive, log mtime frozen ${log_age}s, heartbeat unavailable" null stall
+            fi
+            kill_group; wait "$CHILD_PID" 2>/dev/null || true
+            ATTEMPT_EXIT=1; ATTEMPT_REASON=stall
+            return 1
+          fi
+        elif ((age >= STALL_AFTER)); then
           emit_event stall killed "$ATTEMPT" "pid alive, log mtime frozen ${age}s" null stall
           kill_group; wait "$CHILD_PID" 2>/dev/null || true
           ATTEMPT_EXIT=1; ATTEMPT_REASON=stall
@@ -1461,7 +1501,7 @@ launch_attempt() {
 }
 
 run() {
-  local remaining
+  local remaining heartbeat_ledger heartbeat_lock heartbeat_kill heartbeat_log heartbeat_parent
   [[ -n $LEDGER ]] || die '--ledger is required'
   [[ -n $ON_FAIL ]] || die '--on-fail is required'
   ((${#COMMAND[@]})) || die 'wrapped command is required after --'
@@ -1476,19 +1516,44 @@ run() {
   is_uint "$COOLDOWN" || die '--cooldown must be at least 5'; COOLDOWN=$((10#$COOLDOWN))
   if ((COOLDOWN < 5)); then die '--cooldown must be at least 5'; fi
   ((STALL_AFTER != 0)) || [[ $TIMEOUT_EXPLICIT == true ]] || die '--stall-after 0 requires explicit --timeout'
+  if [[ $HEARTBEAT_FILE_SET == true && $STALL_AFTER -eq 0 ]]; then die '--heartbeat-file requires --stall-after greater than 0'; fi
   if [[ -n $IDEMPOTENT_NAME && -z $ALLOWLIST ]] || [[ -z $IDEMPOTENT_NAME && -n $ALLOWLIST ]]; then die '--idempotent and --allowlist must be supplied together'; fi
   IDEMPOTENT_BOOL=false
   umask 077
   LEDGER_DIR=$(dirname "$LEDGER"); mkdir -p "$LEDGER_DIR" "$SITTER_HOME/cooldown"; chmod 700 "$SITTER_HOME" "$SITTER_HOME/cooldown"
   [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
   [[ ! -L ${LEDGER}.lock ]] || die 'ledger lock must not be a symlink'
+  if [[ $HEARTBEAT_FILE_SET == true ]]; then
+    RUN_ID="sitter-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+    [[ -n $LOG_PATH ]] || LOG_PATH="$SITTER_HOME/logs/${RUN_ID}.log"
+    [[ -n $HEARTBEAT_FILE ]] || die '--heartbeat-file must be nonempty'
+    case $HEARTBEAT_FILE in /*) ;; *) HEARTBEAT_FILE="$PWD/$HEARTBEAT_FILE" ;; esac
+    case $LEDGER in /*) heartbeat_ledger=$LEDGER ;; *) heartbeat_ledger="$PWD/$LEDGER" ;; esac
+    case ${LEDGER}.lock in /*) heartbeat_lock=${LEDGER}.lock ;; *) heartbeat_lock="$PWD/${LEDGER}.lock" ;; esac
+    case $KILL_FILE in /*) heartbeat_kill=$KILL_FILE ;; *) heartbeat_kill="$PWD/$KILL_FILE" ;; esac
+    case $LOG_PATH in /*) heartbeat_log=$LOG_PATH ;; *) heartbeat_log="$PWD/$LOG_PATH" ;; esac
+    if [[ $HEARTBEAT_FILE == "$heartbeat_ledger" || $HEARTBEAT_FILE == "$heartbeat_lock" \
+       || $HEARTBEAT_FILE == "$heartbeat_kill" || $HEARTBEAT_FILE == "$heartbeat_log" ]]; then
+      die '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log'
+    fi
+    if [[ -L $HEARTBEAT_FILE || ( -e $HEARTBEAT_FILE && ! -f $HEARTBEAT_FILE ) ]]; then
+      die 'heartbeat file must be a regular non-symlink file'
+    fi
+    heartbeat_parent=$(dirname "$HEARTBEAT_FILE")
+    mkdir -p "$heartbeat_parent" 2>/dev/null || die 'cannot create heartbeat file parent directory'
+    [[ ! -L $HEARTBEAT_FILE ]] || die 'heartbeat file must be a regular non-symlink file'
+    touch -- "$HEARTBEAT_FILE" 2>/dev/null || die 'cannot touch heartbeat file'
+    [[ -f $HEARTBEAT_FILE && ! -L $HEARTBEAT_FILE ]] || die 'heartbeat file must be a regular non-symlink file'
+  fi
   detect_stat_mtime
   detect_hash_tool
   detect_event_clock
   detect_iconv
   : >>"$LEDGER"; chmod 600 "$LEDGER"
-  RUN_ID="sitter-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
-  [[ -n $LOG_PATH ]] || LOG_PATH="$SITTER_HOME/logs/${RUN_ID}.log"
+  if [[ $HEARTBEAT_FILE_SET != true ]]; then
+    RUN_ID="sitter-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+    [[ -n $LOG_PATH ]] || LOG_PATH="$SITTER_HOME/logs/${RUN_ID}.log"
+  fi
   # Unlike ledger paths, a kill switch is read-only control data; a symlink is
   # deliberately treated as present so it cannot redirect writes or fail open.
   if [[ -e $KILL_FILE || -L $KILL_FILE ]]; then emit_event refused killed 0 'kill switch present before launch' null killed; exit 0; fi
@@ -1538,14 +1603,14 @@ case $VERB in
 esac
 
 SITTER_HOME=${SITTER_HOME:-"$HOME/.sitter"}
-LEDGER='' ON_FAIL='' LOG_PATH='' PROJECT='' AGENT='' TASK='' SESSION_ID='' IDEMPOTENT_NAME='' ALLOWLIST=''
+LEDGER='' ON_FAIL='' LOG_PATH='' HEARTBEAT_FILE='' PROJECT='' AGENT='' TASK='' SESSION_ID='' IDEMPOTENT_NAME='' ALLOWLIST=''
 STALL_AFTER=${SITTER_STALL_AFTER:-900}; TIMEOUT=${SITTER_TIMEOUT:-14400}; RETRIES=${SITTER_RETRIES:-3}; COOLDOWN=${SITTER_COOLDOWN:-60}; GRACE=10
 KILL_FILE=${SITTER_KILL_FILE:-"$SITTER_HOME/STOP"}; TIMEOUT_EXPLICIT=false; [[ ${SITTER_TIMEOUT+x} ]] && TIMEOUT_EXPLICIT=true
 COMMAND=(); EVENT_SEQUENCE=0; EVENT_CLOCK_NANO=false; STAT_MTIME_STYLE=''; COMMAND_DISPLAY=''; WORK_CWD=$PWD; CHILD_PID=''; CHILD_SETSID=false
 EXPECT_ID='' EXPECT_TO='' EXPECT_TEXT='' SLA=86400 ACK_DETAIL='' SWEEP_ONCE=false LAST_EVENT_ID=''
 ASK_EVENT_ID='' ASK_EVENT_RECORD=''
 REPLY_FILE='' ASK_ALREADY_SENT=false COMMAND_SEPARATOR=false ID_SET=false SLA_SET=false TO_SET=false REPLY_FILE_SET=false
-ON_FAIL_SET=false SEEN_OPTIONS=''
+ON_FAIL_SET=false HEARTBEAT_FILE_SET=false SEEN_OPTIONS=''
 HOOK_TIMEOUT=${SITTER_HOOK_TIMEOUT:-30}
 HOOK_KILL_GRACE=${SITTER_HOOK_KILL_GRACE:-5}
 POLL_INTERVAL=${SITTER_POLL_INTERVAL:-15}
@@ -1559,11 +1624,11 @@ if [[ $VERB == __reserve_ask_prepare ]]; then
 fi
 while (($#)); do
   case $1 in
-    --ledger|--on-fail|--log|--stall-after|--timeout|--grace|--idempotent|--allowlist|--retries|--cooldown|--kill-file|--project|--agent|--task|--session-id|--id|--sla|--to|--text|--detail|--reply-file)
+    --ledger|--on-fail|--log|--stall-after|--heartbeat-file|--timeout|--grace|--idempotent|--allowlist|--retries|--cooldown|--kill-file|--project|--agent|--task|--session-id|--id|--sla|--to|--text|--detail|--reply-file)
       (($# >= 2)) || die "$1 requires a value"; key=$1; value=$2; shift 2
       SEEN_OPTIONS="$SEEN_OPTIONS $key"
       case $key in
-        --ledger) LEDGER=$value ;; --on-fail) ON_FAIL=$value; ON_FAIL_SET=true ;; --log) LOG_PATH=$value ;; --stall-after) STALL_AFTER=$value ;; --timeout) TIMEOUT=$value; TIMEOUT_EXPLICIT=true ;;
+        --ledger) LEDGER=$value ;; --on-fail) ON_FAIL=$value; ON_FAIL_SET=true ;; --log) LOG_PATH=$value ;; --stall-after) STALL_AFTER=$value ;; --heartbeat-file) HEARTBEAT_FILE=$value; HEARTBEAT_FILE_SET=true ;; --timeout) TIMEOUT=$value; TIMEOUT_EXPLICIT=true ;;
         --grace) GRACE=$value ;; --idempotent) IDEMPOTENT_NAME=$value ;; --allowlist) ALLOWLIST=$value ;; --retries) RETRIES=$value ;; --cooldown) COOLDOWN=$value ;; --kill-file) KILL_FILE=$value ;;
         --project) PROJECT=$value ;; --agent) AGENT=$value ;; --task) TASK=$value ;; --session-id) SESSION_ID=$value ;;
         --id) EXPECT_ID=$value; ID_SET=true ;; --sla) SLA=$value; SLA_SET=true ;; --to) EXPECT_TO=$value; TO_SET=true ;; --text) EXPECT_TEXT=$value ;; --detail) ACK_DETAIL=$value ;;
@@ -1583,7 +1648,7 @@ case $VERB in
     [[ $SLA_SET == true && $TO_SET == true && $REPLY_FILE_SET == true ]] || die '--ledger, --to, --sla, and --reply-file are required'
     [[ $ON_FAIL_SET == false && $SWEEP_ONCE == false ]] || die 'ask does not accept --on-fail or --once'
     case " $SEEN_OPTIONS " in
-      *" --log "*|*" --stall-after "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
+      *" --log "*|*" --stall-after "*|*" --heartbeat-file "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
         die 'ask received an option outside its contract'
         ;;
     esac
@@ -1591,7 +1656,7 @@ case $VERB in
   watch)
     [[ $ON_FAIL_SET == false && $ASK_ALREADY_SENT == false ]] || die 'watch does not accept --on-fail or --already-sent'
     case " $SEEN_OPTIONS " in
-      *" --reply-file "*|*" --to "*|*" --sla "*|*" --text "*|*" --log "*|*" --stall-after "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
+      *" --reply-file "*|*" --to "*|*" --sla "*|*" --text "*|*" --log "*|*" --stall-after "*|*" --heartbeat-file "*|*" --timeout "*|*" --grace "*|*" --idempotent "*|*" --allowlist "*|*" --retries "*|*" --cooldown "*|*" --project "*|*" --agent "*|*" --task "*|*" --session-id "*|*" --detail "*)
         die 'watch received an option outside its contract'
         ;;
     esac

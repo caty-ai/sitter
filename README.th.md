@@ -186,6 +186,18 @@ sitter ถือว่างานค้างเมื่อมัน**ไม�
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
 ```
 
+ถ้างานเงียบแต่ wrapper ตรวจยืนยันได้ด้วยต้นทุนต่ำว่างานยังปกติ ให้คงการป้องกันงานค้างไว้ด้วย `--heartbeat-file` ใช้ไฟล์ heartbeat แยกหนึ่งไฟล์ต่อ run ที่เฝ้าดู ห้ามใช้ร่วมกันระหว่างหลาย run และให้ wrapper touch ไฟล์อย่างน้อยถี่เป็นสองเท่าของ `--stall-after` (mtime มีความละเอียดเป็นวินาที และ sitter ตรวจทุก 15 วินาที)
+
+```sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+```
+
+| สถานการณ์ | วิธีใช้ |
+| --- | --- |
+| งานมีเอาต์พุตตามปกติ แต่บางครั้งเงียบนาน | เพิ่มค่า `--stall-after` |
+| งานเงียบจนเสร็จ และไม่มีสิ่งใดยืนยันสถานะได้ระหว่างทาง | `--stall-after 0 --timeout <ขีดจำกัด>` |
+| งานเงียบ แต่มีสิ่งที่ตรวจยืนยันสถานะได้ด้วยต้นทุนต่ำ | ใช้ wrapper กับ `--heartbeat-file` และคงทั้ง `--stall-after` กับ `--timeout` |
+
 <details>
 <summary>ถ้ามีอะไรผิดพลาด</summary>
 

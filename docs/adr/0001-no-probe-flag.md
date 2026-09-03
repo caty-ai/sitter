@@ -6,7 +6,7 @@
   requirements round (4 independent drafts, anonymized cross-review) that
   first rejected the flag, and the Phase 2 cross-model review (2 independent
   reviewers, both GO) that made the rejection permanent
-- Related: `docs/requirements-v0.md` item 2, `docs/design-history.md` (2026-07-21 Phase 2 assessment)
+- Related: `docs/requirements-v0.md` item 2, `docs/design-history.md` (2026-07-21 Phase 2 assessment); see also ADR-0003 (`--heartbeat-file`)
 
 ## Context
 
