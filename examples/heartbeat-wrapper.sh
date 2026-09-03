@@ -15,9 +15,8 @@
 set -eu
 
 # --- worker-specific knobs (edit these) -------------------------------------
-worker_cmd() { your-worker "$@"; }
-
-# Keep this a single process so the bounded kill below is reliable.
+# Keep these as single processes so the bounded kills below are reliable.
+worker_cmd() { exec your-worker "$@"; }
 vouch_cmd() { exec your-worker --ping; }
 
 HB_INTERVAL="${HB_INTERVAL:-60}"  # seconds between successful-vouch attempts
@@ -31,6 +30,10 @@ esac
   echo "heartbeat-wrapper: HB_INTERVAL must be greater than zero" >&2
   exit 2
 }
+[ "$HB_TIMEOUT" -gt 0 ] || {
+  echo "heartbeat-wrapper: HB_TIMEOUT must be greater than zero" >&2
+  exit 2
+}
 [ -n "${SITTER_HEARTBEAT_FILE:-}" ] || {
   echo "heartbeat-wrapper: SITTER_HEARTBEAT_FILE is required" >&2
   exit 2
@@ -39,7 +42,7 @@ esac
 worker_pid=''
 heartbeat_pid=''
 
-# shellcheck disable=SC2329 # invoked by EXIT/signal traps
+# shellcheck disable=SC2317,SC2329 # invoked by EXIT/signal traps
 cleanup() {
   if [ -n "$heartbeat_pid" ] && kill -0 "$heartbeat_pid" 2>/dev/null; then
     kill "$heartbeat_pid" 2>/dev/null || true
@@ -55,7 +58,7 @@ heartbeat_loop() {
   vouch_pid=''
   delay_pid=''
 
-  # shellcheck disable=SC2329 # invoked by the heartbeat-loop signal trap
+  # shellcheck disable=SC2317,SC2329 # invoked by the heartbeat-loop signal trap
   stop_loop_children() {
     if [ -n "$vouch_pid" ] && kill -0 "$vouch_pid" 2>/dev/null; then
       kill "$vouch_pid" 2>/dev/null || true

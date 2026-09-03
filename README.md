@@ -189,7 +189,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 If the job is silent but a wrapper can cheaply vouch that it is still healthy, keep stall protection with `--heartbeat-file`. Use one heartbeat file per supervised run, never share it between runs, and have the wrapper touch it at least twice as often as `--stall-after` (mtimes are second-granular and sitter polls every 15 seconds).
 
 ```sh
-sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
 ```
 
 | Situation | Use |

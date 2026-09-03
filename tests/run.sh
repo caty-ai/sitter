@@ -3,6 +3,8 @@
 # optional and used solely by assert_json_valid.
 set -euo pipefail
 
+unset SITTER_STALL_AFTER SITTER_TIMEOUT SITTER_RETRIES SITTER_COOLDOWN SITTER_HEARTBEAT_FILE
+
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck source=tests/lib.sh disable=SC1091
 source "$ROOT/tests/lib.sh"
@@ -174,11 +176,13 @@ heartbeat_rejects_disabled_stall() {
 
 # ADR-0003 planned test 4: the new writable path refuses symlinks by default.
 heartbeat_symlink_is_refused() {
-  local target="$CASE_DIR/target" heartbeat="$CASE_DIR/heartbeat"
+  local target="$CASE_DIR/target" heartbeat="$CASE_DIR/heartbeat" stderr="$CASE_DIR/symlink.stderr"
   : >"$target"
   ln -s "$target" "$heartbeat"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$heartbeat" -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$heartbeat" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq 'heartbeat file must be a regular non-symlink file' "$stderr"
 }
 
 # ADR-0003 planned test 5: ask/watch reject the option with their existing message.
@@ -238,7 +242,7 @@ heartbeat_deleted_midrun_falls_back_to_log() {
   local ledger="$CASE_DIR/deleted.jsonl"
   HB_MODE=delete assert_exit 1 run_heartbeat_case deleted \
     --heartbeat-file "$CASE_DIR/deleted.touch" -- "$HEARTBEAT_FIXTURE"
-  grep -q '"event":"stall".*"detail":"pid alive, log mtime frozen [0-9]*s, heartbeat unavailable"' "$ledger"
+  grep -Eq '"event":"stall".*"detail":"pid alive, log mtime frozen [0-9]+s, heartbeat unavailable"' "$ledger"
   grep -q '"reason":"stall"' "$ledger"
 }
 
@@ -252,24 +256,33 @@ heartbeat_symlink_swap_midrun_falls_back_to_log() {
 }
 
 heartbeat_empty_value_is_refused() {
+  local stderr="$CASE_DIR/empty.stderr"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file '' -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file '' \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must be nonempty' "$stderr"
 }
 
 heartbeat_unwritable_parent_is_refused() {
-  local parent="$CASE_DIR/unwritable"
+  if ! chmod_denies_dir_write; then printf 'SKIP heartbeat_unwritable_parent_is_refused: chmod not enforced\n' >&2; return 0; fi
+  local parent="$CASE_DIR/unwritable" stderr="$CASE_DIR/unwritable.stderr"
   mkdir "$parent"
   chmod 500 "$parent"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$parent/heartbeat" -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$parent/heartbeat" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq 'cannot touch heartbeat file' "$stderr"
   chmod 700 "$parent"
   [[ ! -e $parent/heartbeat ]]
 }
 
 heartbeat_directory_path_is_refused() {
+  local stderr="$CASE_DIR/directory.stderr"
   mkdir "$CASE_DIR/heartbeat-dir"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$CASE_DIR/heartbeat-dir" -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --heartbeat-file "$CASE_DIR/heartbeat-dir" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq 'heartbeat file must be a regular non-symlink file' "$stderr"
 }
 
 heartbeat_attempt_touch_failure_is_not_a_stall() {
@@ -282,7 +295,9 @@ heartbeat_attempt_touch_failure_is_not_a_stall() {
       --idempotent heartbeat-retry --allowlist "$allow" --retries 1 --cooldown 5 \
       --stall-after 3 --timeout 20 --grace 0 -- "$HEARTBEAT_FIXTURE"
   [[ $(<"$state") -eq 1 ]]
-  ! grep -q '"event":"stall"' "$ledger"
+  if grep -q '"event":"stall"' "$ledger"; then return 1; fi
+  grep -Fq '"detail":"attempt failed: heartbeat file unavailable before attempt"' "$ledger"
+  grep -q '"event":"fail".*"reason":"exit"' "$ledger"
 }
 
 heartbeat_environment_does_not_change_ask_or_watch() {
@@ -296,27 +311,44 @@ heartbeat_environment_does_not_change_ask_or_watch() {
 }
 
 heartbeat_collision_with_ledger_is_refused() {
-  local path="$CASE_DIR/same"
+  local path="$CASE_DIR/same" stderr="$CASE_DIR/ledger-collision.stderr"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$path" --on-fail "$SPY" --heartbeat-file "$path" -- true
+    --ledger "$path" --on-fail "$SPY" --heartbeat-file "$path" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log' "$stderr"
 }
 
 heartbeat_collision_with_ledger_lock_is_refused() {
-  local ledger="$CASE_DIR/ledger.jsonl"
+  local ledger="$CASE_DIR/ledger.jsonl" stderr="$CASE_DIR/ledger-lock-collision.stderr"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$ledger" --on-fail "$SPY" --heartbeat-file "$ledger.lock" -- true
+    --ledger "$ledger" --on-fail "$SPY" --heartbeat-file "$ledger.lock" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log' "$stderr"
 }
 
 heartbeat_collision_with_kill_file_is_refused() {
-  local path="$CASE_DIR/kill"
+  local path="$CASE_DIR/kill" stderr="$CASE_DIR/kill-collision.stderr"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --kill-file "$path" --heartbeat-file "$path" -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --kill-file "$path" --heartbeat-file "$path" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log' "$stderr"
 }
 
 heartbeat_collision_with_log_is_refused() {
-  local path="$CASE_DIR/log"
+  local path="$CASE_DIR/log" stderr="$CASE_DIR/log-collision.stderr"
   assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
-    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --log "$path" --heartbeat-file "$path" -- true
+    --ledger "$CASE_DIR/ledger.jsonl" --on-fail "$SPY" --log "$path" --heartbeat-file "$path" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log' "$stderr"
+}
+
+heartbeat_normalized_collision_with_ledger_is_refused() {
+  local dir="$CASE_DIR/x" ledger="$CASE_DIR/x/ledger.jsonl" stderr="$CASE_DIR/normalized-collision.stderr"
+  mkdir -p "$dir"
+  assert_exit 2 env SITTER_HOME="$CASE_DIR/home" "$SITTER" run \
+    --ledger "$ledger" --on-fail "$SPY" --heartbeat-file "$CASE_DIR/x/../x/ledger.jsonl" \
+    --stall-after 3 --timeout 20 -- true 2>"$stderr"
+  grep -Fq -- '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log' "$stderr"
 }
 
 heartbeat_export_is_scoped_to_child() {
@@ -2174,7 +2206,7 @@ grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/nul
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"

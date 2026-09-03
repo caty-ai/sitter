@@ -189,7 +189,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 ถ้างานเงียบแต่ wrapper ตรวจยืนยันได้ด้วยต้นทุนต่ำว่างานยังปกติ ให้คงการป้องกันงานค้างไว้ด้วย `--heartbeat-file` ใช้ไฟล์ heartbeat แยกหนึ่งไฟล์ต่อ run ที่เฝ้าดู ห้ามใช้ร่วมกันระหว่างหลาย run และให้ wrapper touch ไฟล์อย่างน้อยถี่เป็นสองเท่าของ `--stall-after` (mtime มีความละเอียดเป็นวินาที และ sitter ตรวจทุก 15 วินาที)
 
 ```sh
-sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
 ```
 
 | สถานการณ์ | วิธีใช้ |

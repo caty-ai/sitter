@@ -189,7 +189,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 如果任务本身保持安静，但包装脚本能以很低的成本确认它仍然健康，就可以用 `--heartbeat-file` 保留卡住保护。每个受监督的 run 都要使用独立的 heartbeat 文件，绝不能在多个 run 之间共享；由于 mtime 只有秒级精度且 sitter 每 15 秒轮询一次，包装脚本 touch 文件的频率至少应为 `--stall-after` 的两倍。
 
 ```sh
-sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
 ```
 
 | 情况 | 使用方式 |

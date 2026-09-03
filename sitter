@@ -129,6 +129,17 @@ file_mtime() {
   esac
 }
 
+path_with_physical_parent() {
+  local path=$1 parent base physical_parent
+  parent=$(dirname -- "$path")
+  base=$(basename -- "$path")
+  if physical_parent=$(cd -- "$parent" 2>/dev/null && pwd -P); then
+    printf '%s/%s\n' "${physical_parent%/}" "$base"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
 detect_hash_tool() {
   local output
   if output=$(printf 'x' | shasum -a 256 2>/dev/null | awk '{print $1}') && [[ $output == 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 ]]; then
@@ -1405,6 +1416,7 @@ sleep_watching_kill() {
 
 launch_attempt() {
   local started now mtime age child_state remaining sleep_for heartbeat_mtime log_age heartbeat_age heartbeat_available
+  ATTEMPT_DETAIL=''
   mkdir -p "$(dirname "$LOG_PATH")"; chmod 700 "$(dirname "$LOG_PATH")"
   : >>"$LOG_PATH"
   touch -- "$LOG_PATH" 2>/dev/null || true
@@ -1413,7 +1425,7 @@ launch_attempt() {
        || ! touch -- "$HEARTBEAT_FILE" 2>/dev/null \
        || [[ ! -f $HEARTBEAT_FILE || -L $HEARTBEAT_FILE ]]; then
       printf 'sitter: heartbeat file is unavailable before attempt\n' >&2
-      ATTEMPT_EXIT=1; ATTEMPT_REASON='exit'
+      ATTEMPT_EXIT=1; ATTEMPT_REASON='exit'; ATTEMPT_DETAIL='heartbeat file unavailable before attempt'
       return 1
     fi
   fi
@@ -1501,7 +1513,7 @@ launch_attempt() {
 }
 
 run() {
-  local remaining heartbeat_ledger heartbeat_lock heartbeat_kill heartbeat_log heartbeat_parent
+  local remaining heartbeat_normalized heartbeat_ledger heartbeat_lock heartbeat_kill heartbeat_log heartbeat_parent
   [[ -n $LEDGER ]] || die '--ledger is required'
   [[ -n $ON_FAIL ]] || die '--on-fail is required'
   ((${#COMMAND[@]})) || die 'wrapped command is required after --'
@@ -1532,15 +1544,20 @@ run() {
     case ${LEDGER}.lock in /*) heartbeat_lock=${LEDGER}.lock ;; *) heartbeat_lock="$PWD/${LEDGER}.lock" ;; esac
     case $KILL_FILE in /*) heartbeat_kill=$KILL_FILE ;; *) heartbeat_kill="$PWD/$KILL_FILE" ;; esac
     case $LOG_PATH in /*) heartbeat_log=$LOG_PATH ;; *) heartbeat_log="$PWD/$LOG_PATH" ;; esac
-    if [[ $HEARTBEAT_FILE == "$heartbeat_ledger" || $HEARTBEAT_FILE == "$heartbeat_lock" \
-       || $HEARTBEAT_FILE == "$heartbeat_kill" || $HEARTBEAT_FILE == "$heartbeat_log" ]]; then
-      die '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log'
-    fi
     if [[ -L $HEARTBEAT_FILE || ( -e $HEARTBEAT_FILE && ! -f $HEARTBEAT_FILE ) ]]; then
       die 'heartbeat file must be a regular non-symlink file'
     fi
-    heartbeat_parent=$(dirname "$HEARTBEAT_FILE")
+    heartbeat_parent=$(dirname -- "$HEARTBEAT_FILE")
     mkdir -p "$heartbeat_parent" 2>/dev/null || die 'cannot create heartbeat file parent directory'
+    heartbeat_normalized=$(path_with_physical_parent "$HEARTBEAT_FILE")
+    heartbeat_ledger=$(path_with_physical_parent "$heartbeat_ledger")
+    heartbeat_lock=$(path_with_physical_parent "$heartbeat_lock")
+    heartbeat_kill=$(path_with_physical_parent "$heartbeat_kill")
+    heartbeat_log=$(path_with_physical_parent "$heartbeat_log")
+    if [[ $heartbeat_normalized == "$heartbeat_ledger" || $heartbeat_normalized == "$heartbeat_lock" \
+       || $heartbeat_normalized == "$heartbeat_kill" || $heartbeat_normalized == "$heartbeat_log" ]]; then
+      die '--heartbeat-file must not equal --ledger, its lock, --kill-file, or --log'
+    fi
     [[ ! -L $HEARTBEAT_FILE ]] || die 'heartbeat file must be a regular non-symlink file'
     touch -- "$HEARTBEAT_FILE" 2>/dev/null || die 'cannot touch heartbeat file'
     [[ -f $HEARTBEAT_FILE && ! -L $HEARTBEAT_FILE ]] || die 'heartbeat file must be a regular non-symlink file'
@@ -1576,7 +1593,7 @@ run() {
       rm -f "$COOLDOWN_FILE"
       exit 0
     fi
-    emit_event fail failed "$ATTEMPT" "attempt failed: $ATTEMPT_REASON" "$ATTEMPT_EXIT" "$ATTEMPT_REASON"
+    emit_event fail failed "$ATTEMPT" "attempt failed: ${ATTEMPT_DETAIL:-$ATTEMPT_REASON}" "$ATTEMPT_EXIT" "$ATTEMPT_REASON"
     if [[ $ATTEMPT_REASON == killed ]]; then emit_event end killed "$ATTEMPT" 'kill switch stopped supervision' "$ATTEMPT_EXIT" killed; exit 0; fi
     if [[ $IDEMPOTENT_BOOL != true ]]; then emit_event end failed "$ATTEMPT" 'non-idempotent command will not restart' "$ATTEMPT_EXIT" "$ATTEMPT_REASON" "$ATTEMPT_REASON"; exit "$ATTEMPT_EXIT"; fi
     if ((COOLDOWN_USED >= RETRIES)); then emit_event end budget_exhausted "$ATTEMPT" 'retry budget exhausted; --on-fail invoked' "$ATTEMPT_EXIT" budget_exhausted budget_exhausted; exit "$ATTEMPT_EXIT"; fi

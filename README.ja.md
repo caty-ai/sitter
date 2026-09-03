@@ -189,7 +189,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 作業自体は無言でも、ラッパーが低コストで正常性を確認できるなら、`--heartbeat-file` でストール保護を維持できます。heartbeat ファイルは監視する run ごとに 1 つ用意し、複数の run で決して共有しないでください。mtime は秒単位で、sitter は 15 秒ごとに確認するため、ラッパーは `--stall-after` の少なくとも 2 倍の頻度で touch してください。
 
 ```sh
-sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./heartbeat-wrapper.sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
 ```
 
 | 状況 | 使う設定 |
