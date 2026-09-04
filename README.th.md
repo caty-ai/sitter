@@ -186,7 +186,7 @@ sitter ถือว่างานค้างเมื่อมัน**ไม�
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
 ```
 
-ถ้างานเงียบแต่ wrapper ตรวจยืนยันได้ด้วยต้นทุนต่ำว่างานยังปกติ ให้คงการป้องกันงานค้างไว้ด้วย `--heartbeat-file` ใช้ไฟล์ heartbeat แยกหนึ่งไฟล์ต่อ run ที่เฝ้าดู ห้ามใช้ร่วมกันระหว่างหลาย run และให้ wrapper touch ไฟล์อย่างน้อยถี่เป็นสองเท่าของ `--stall-after` (mtime มีความละเอียดเป็นวินาที และ sitter ตรวจทุก 15 วินาที)
+ถ้างานเงียบแต่ wrapper ตรวจยืนยันได้ด้วยต้นทุนต่ำว่างานยังปกติ ให้คงการป้องกันงานค้างไว้ด้วย `--heartbeat-file` ใช้ไฟล์ heartbeat แยกหนึ่งไฟล์ต่อ run ที่เฝ้าดู ห้ามใช้ร่วมกันระหว่างหลาย run และให้ wrapper touch ไฟล์อย่างน้อยถี่เป็นสองเท่าของ `--stall-after` (mtime มีความละเอียดเป็นวินาที และ sitter ตรวจทุก 15 วินาที) ภายใน wrapper ให้ worker เป็นโปรเซสเดียว (เรียกด้วย `exec`) หรือส่งต่อ `TERM` ไปยังโปรเซสลูก มิฉะนั้นเส้นทาง kill ของ wrapper เองจะปล่อยให้โปรเซสหลานยังทำงานอยู่
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh

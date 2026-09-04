@@ -186,7 +186,7 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
 ```
 
-如果任务本身保持安静，但包装脚本能以很低的成本确认它仍然健康，就可以用 `--heartbeat-file` 保留卡住保护。每个受监督的 run 都要使用独立的 heartbeat 文件，绝不能在多个 run 之间共享；由于 mtime 只有秒级精度且 sitter 每 15 秒轮询一次，包装脚本 touch 文件的频率至少应为 `--stall-after` 的两倍。
+如果任务本身保持安静，但包装脚本能以很低的成本确认它仍然健康，就可以用 `--heartbeat-file` 保留卡住保护。每个受监督的 run 都要使用独立的 heartbeat 文件，绝不能在多个 run 之间共享；由于 mtime 只有秒级精度且 sitter 每 15 秒轮询一次，包装脚本 touch 文件的频率至少应为 `--stall-after` 的两倍。在包装脚本内部，应让 worker 保持为单一进程（用 `exec` 启动），或把 `TERM` 转发给其子进程；否则，包装脚本自身的 kill 路径会留下孙进程。
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
