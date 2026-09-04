@@ -769,9 +769,9 @@ term_trapping_hook_is_killed() {
   SITTER_HOME="$home" "$SITTER" expect --ledger "$ledger" --on-fail "$hook" --id term --sla 0
   started=$(date +%s)
   SITTER_HOME="$home" SITTER_HOOK_TIMEOUT=1 SITTER_HOOK_KILL_GRACE=1 "$SITTER" sweep --once --ledger "$ledger" --on-fail "$hook"
-  # The hook sleeps 60 s and ignores TERM, so missing KILL escalation takes at least 60 s.
-  # A 20 s bound leaves at least 3x headroom: Windows CI needed about 7 s including two
-  # sitter startups, while macOS takes 2-3 s, and still catches the regression by a wide margin.
+  # The hook ignores TERM and sleeps 60 s, so a sweep without a hook timeout takes at least 60 s.
+  # A 20 s bound leaves >=3x headroom: Windows CI needs ~7 s with two sitter startups; macOS 2-3 s.
+  # Whether the hook dies is covered by sibling hook_timeout_group_gate_kills_trapping_child.
   elapsed=$(( $(date +%s) - started )); ((elapsed < 20))
 }
 
