@@ -58,10 +58,10 @@ has no environment-variable input: sitter resolves a relative path against
 then passes the absolute path to the child only as `SITTER_HEARTBEAT_FILE`.
 That equality check compares strings after making each relative path absolute
 against `$PWD`, then resolving each path's parent directory to its physical
-path. Because the heartbeat parent is created before comparison, that side is
-always resolved; a ledger, lock, kill-file, or log path whose parent does not
-yet exist retains its spelling after absolutization, so `..` on that side is
-not collapsed.
+path. The ledger (and lock) parent and the heartbeat parent are created before
+the comparison, so those sides are always resolved; a kill-file or log path
+whose parent does not yet exist retains its spelling after absolutization, so
+`..` on that side is not collapsed.
 Use one heartbeat file per supervised run, never share it between runs, and
 touch it at least twice as often as `--stall-after` because mtimes are
 second-granular and polling is every 15 seconds. Inside the wrapper, keep

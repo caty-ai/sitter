@@ -55,9 +55,9 @@ sitter --help | -h | --version
 ledger・ledger lock・kill file・log との同一パスは拒否されます。絶対パスは子プロセス
 だけに `SITTER_HEARTBEAT_FILE` として渡されます。同一パスの判定では、まず相対パスを
 `$PWD` 基準の絶対パスにしてから、各パスの親ディレクトリを物理パスへ解決した文字列
-同士を比較します。heartbeat の親は比較前に作成されるため heartbeat 側は常に解決
-されますが、親がまだ存在しない ledger・lock・kill file・log 側は絶対パス化後の表記
-のまま比較され、その側の `..` は畳み込まれません。heartbeat ファイルは監視する run
+同士を比較します。ledger（と lock）の親と heartbeat の親は比較前に作成されるため
+その側は常に解決されますが、親がまだ存在しない kill file・log 側は絶対パス化後の
+表記のまま比較され、その側の `..` は畳み込まれません。heartbeat ファイルは監視する run
 ごとに 1 つ用意し、複数 run で決して共有しないでください。mtime は秒単位で poll は
 15 秒ごとのため、`--stall-after` の少なくとも 2 倍の頻度で touch してください。ラッパー
 内では、worker を単一プロセスのままにする（`exec` で起動する）か子プロセスへ `TERM`
