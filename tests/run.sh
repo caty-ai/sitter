@@ -127,11 +127,15 @@ cooldown_crossing_restart_does_not_falsely_stall() {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
     '[[ -f $FW_STATE ]] && sleep 2' 'exec "$FW_FIXTURE"' >"$worker"
   chmod +x "$worker"
+  # Legitimate silence on attempt 2 is sleep 2 + process startup <=1s + 1s integer-second truncation,
+  # approximately 4s <8s; tripled startup still stays under 8s. Counting cooldown as silence makes the log
+  # >=15s old on attempt 2's first poll and is still caught. Pre-fix flake (stall-after 3): attempt 2 started
+  # at :16, stalled at :19 with the log 3s old.
   FW_FIXTURE="$FIXTURE" FW_MODE=flaky FW_FAIL_TIMES=1 FW_STATE="$CASE_DIR/restart.state" \
     SITTER_HOME="$CASE_DIR/home-cooldown-crossing" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/cooldown-crossing.spy" \
     "$SITTER" run --ledger "$CASE_DIR/cooldown-crossing.jsonl" --on-fail "$SPY" \
-      --idempotent slow-second-attempt --allowlist "$allow" --retries 1 --cooldown 5 \
-      --stall-after 3 --timeout 20 --grace 0 -- "$worker"
+      --idempotent slow-second-attempt --allowlist "$allow" --retries 1 --cooldown 15 \
+      --stall-after 8 --timeout 20 --grace 0 -- "$worker"
   grep -q '"event":"restart"' "$CASE_DIR/cooldown-crossing.jsonl"
   grep -q '"event":"end","status":"success"' "$CASE_DIR/cooldown-crossing.jsonl"
   ! grep -q '"reason":"stall"' "$CASE_DIR/cooldown-crossing.jsonl"
@@ -539,7 +543,8 @@ denylist_shell_bundle_and_nice_residue() {
   assert_exit 2 run_case deny-bash-ec -- bash -ec 'git push origin main'
   assert_exit 2 run_case deny-nice-repeated -- nice -n 5 -n 3 git push origin main
 
-  run_case allow-sh-lc -- sh -lc 'echo harmless'
+  # A login shell may source profiles and stay silent past run_case's 2s window, effectively 1-2s with integer mtimes; denied cases fail before launch, so timing is irrelevant there.
+  run_case allow-sh-lc --stall-after 10 -- sh -lc 'echo harmless'
 }
 
 # ⑩ acknowledged expectations stay quiet; overdue state transitions notify 3 times.
@@ -1262,7 +1267,7 @@ stop_during_backoff_observed() {
   FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/backoff-stop.spy" \
     "$SITTER" run --ledger "$ledger" --on-fail "$SPY" --idempotent fail --allowlist "$allow" --retries 1 --cooldown 60 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE" &
   pid=$!
-  for ((poll = 0; poll < 200; poll++)); do
+  for ((poll = 0; poll < 600; poll++)); do
     grep -q '"event":"restart"' "$ledger" 2>/dev/null && break
     sleep 0.1
   done
@@ -1270,7 +1275,8 @@ stop_during_backoff_observed() {
   touch "$home/STOP"
   wait "$pid"
   elapsed=$(( $(date +%s) - started ))
-  grep -q '"event":"end","status":"killed".*"detail":"kill switch present before launch"' "$ledger"
+  # Both details prove the 60s backoff was interrupted; STOP may land before or after the pre-sleep kill check, and the slow-runner window includes ledger lock release plus temp cleanup after restart append.
+  grep -Eq '"event":"end","status":"killed".*"detail":"(kill switch present before launch|kill switch stopped before restart)"' "$ledger"
   [[ ${OSTYPE:-} == msys* || ${OSTYPE:-} == cygwin* ]] || ((elapsed < 20))
 }
 
