@@ -18,6 +18,7 @@ behind each design decision live in [requirements-v0.md](requirements-v0.md)
 ```
 sitter run --ledger <path> --on-fail <cmd> [--log <path>]
            [--stall-after <s, default 900; 0=disabled>] [--timeout <s, default 14400>]
+           [--heartbeat-file <path>]
            [--grace <s, default 10>]
            [--idempotent NAME --allowlist <path>]
            [--retries <n 0..10, default 3>] [--cooldown <s, default 60, minimum 5>]
@@ -48,6 +49,17 @@ sitter --help | -h | --version
 Stall detection is evaluated at 15-second granularity; timeout polling uses
 the remaining timeout when it is shorter, so short timeouts are still honored.
 `--stall-after 0` without `--timeout` is refused at startup.
+With `--heartbeat-file`, stall age uses the freshest of the log and heartbeat
+mtimes; an unavailable or non-regular heartbeat contributes nothing, while a
+failed log stat retains the existing skip-for-that-poll behavior. The option
+has no environment-variable input: sitter resolves a relative path against
+`$PWD`, refuses empty values, symlinks, non-regular files, touch failures,
+`--stall-after 0`, and equality with the ledger, ledger lock, kill file, or log,
+then passes the absolute path to the child only as `SITTER_HEARTBEAT_FILE`.
+Use one heartbeat file per supervised run, never share it between runs, and
+touch it at least twice as often as `--stall-after` because mtimes are
+second-granular and polling is every 15 seconds. `expect`, `ack`, and `sweep`
+parse and ignore the option like `--stall-after`; `ask` and `watch` refuse it.
 
 ## Reply tracking in detail
 

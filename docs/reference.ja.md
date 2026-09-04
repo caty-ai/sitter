@@ -16,6 +16,7 @@ README から移した技術詳細の置き場です。README は「まず使え
 ```
 sitter run --ledger <path> --on-fail <cmd> [--log <path>]
            [--stall-after <秒, 既定900; 0=無効>] [--timeout <秒, 既定14400>]
+           [--heartbeat-file <path>]
            [--grace <秒, 既定10>]
            [--idempotent NAME --allowlist <path>]
            [--retries <n 0..10, 既定3>] [--cooldown <秒, 既定60, 最小5>]
@@ -46,6 +47,17 @@ sitter --help | -h | --version
 ストール判定は 15 秒間隔で評価されます。タイムアウトの残り時間がそれより
 短い場合は残り時間でポーリングするため、短いタイムアウトも正しく効きます。
 `--timeout` なしの `--stall-after 0` は起動時に拒否されます。
+`--heartbeat-file` を指定すると、ログと heartbeat のうち新しい方の mtime から
+ストール時間を計算します。heartbeat が利用不能または通常ファイルでない poll では
+ログだけを使い、ログの stat 失敗時は従来どおりその poll の判定をスキップします。
+環境変数からこの機能を有効にはできません。相対パスは `$PWD` 基準の絶対パスへ
+解決され、空値、symlink、通常ファイル以外、touch 失敗、`--stall-after 0`、および
+ledger・ledger lock・kill file・log との同一パスは拒否されます。絶対パスは子プロセス
+だけに `SITTER_HEARTBEAT_FILE` として渡されます。heartbeat ファイルは監視する run
+ごとに 1 つ用意し、複数 run で決して共有しないでください。mtime は秒単位で poll は
+15 秒ごとのため、`--stall-after` の少なくとも 2 倍の頻度で touch してください。
+`expect`・`ack`・`sweep` は `--stall-after` と同様にこのオプションを parse-and-ignore
+し、`ask`・`watch` だけが拒否します。
 
 ## 返事トラッキングの詳細
 

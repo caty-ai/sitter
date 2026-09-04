@@ -186,6 +186,18 @@ sitter は、**画面にもログにも 15 分まったく出力がない作業*
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo 完了'
 ```
 
+作業自体は無言でも、ラッパーが低コストで正常性を確認できるなら、`--heartbeat-file` でストール保護を維持できます。heartbeat ファイルは監視する run ごとに 1 つ用意し、複数の run で決して共有しないでください。mtime は秒単位で、sitter は 15 秒ごとに確認するため、ラッパーは `--stall-after` の少なくとも 2 倍の頻度で touch してください。
+
+```sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
+```
+
+| 状況 | 使う設定 |
+| --- | --- |
+| 普段は出力するが、ときどき長時間無言になる | `--stall-after` を延ばす |
+| 完了まで無言で、途中の正常性を確認できるものがない | `--stall-after 0 --timeout <上限>` |
+| 無言だが、低コストで正常性を確認できるものがある | ラッパーと `--heartbeat-file` を使い、`--stall-after` と `--timeout` の両方を残す |
+
 <details>
 <summary>うまくいかないときは</summary>
 
@@ -281,7 +293,7 @@ sitter は「勝手なことをしない」を設計の柱にしています。
 
 - **CI** — 上のバッジはライブです。main へのすべての push とすべての pull request で完全な fault-injection suite が走り、ケース数は `make test` の結果で機械的に報告されます
 - **検証済み環境** — Ubuntu はすべての pull request のゲートです。macOS は main へのすべての push で実行されます。Windows（Git Bash）は、できる範囲での対応です
-- **成熟度** — v0.3.1。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
+- **成熟度** — v0.4.0。v0 の 4 つの操作（`run` / `expect` / `ack` / `sweep`）は `docs/requirements-v0.md` で仕様が凍結され、`ask` / `watch` は `docs/specs/prd-v0.2-ask-watch.md` で固定されています（v0.2.0 で監査済み）
 - **既知の制約** — denylist は事故防止のガードであり、セキュリティ境界ではありません。再試行は、あなたが冪等だと明示したジョブにだけ行われます
 
 ---

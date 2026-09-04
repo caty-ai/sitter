@@ -186,6 +186,18 @@ sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' 
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
 ```
 
+如果任务本身保持安静，但包装脚本能以很低的成本确认它仍然健康，就可以用 `--heartbeat-file` 保留卡住保护。每个受监督的 run 都要使用独立的 heartbeat 文件，绝不能在多个 run 之间共享；由于 mtime 只有秒级精度且 sitter 每 15 秒轮询一次，包装脚本 touch 文件的频率至少应为 `--stall-after` 的两倍。
+
+```sh
+sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh
+```
+
+| 情况 | 使用方式 |
+| --- | --- |
+| 任务通常持续输出，但偶尔会长时间安静 | 调大 `--stall-after` |
+| 任务完成前一直安静，期间没有任何东西能确认它健康 | `--stall-after 0 --timeout <上限>` |
+| 任务保持安静，但有低成本方式可以确认它健康 | 使用包装脚本和 `--heartbeat-file`，同时保留 `--stall-after` 与 `--timeout` |
+
 <details>
 <summary>如果出了问题</summary>
 
@@ -281,7 +293,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - **CI** — 上面的徽章是实时的：每次向 main push 以及每个 pull request 都会运行完整的 fault-injection suite，而用例数由 `make test` 自动报告
 - **已验证环境** — Ubuntu 为每个 pull request 设置门禁；macOS 在每次向 main push 时运行；Windows（Git Bash）属于尽力支持
-- **成熟度** — v0.3.1；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
+- **成熟度** — v0.4.0；4 个 v0 操作（`run` / `expect` / `ack` / `sweep`）已在 `docs/requirements-v0.md` 中作为规范冻结，而 `ask` / `watch` 则由 `docs/specs/prd-v0.2-ask-watch.md` 固定（已在 v0.2.0 中审计）
 - **已知限制** — denylist 只是防止误操作的护栏，不是安全屏障；只有你明确声明为幂等的任务才会触发重试
 
 ---
