@@ -128,7 +128,9 @@ cooldown_crossing_restart_does_not_falsely_stall() {
     '[[ -f $FW_STATE ]] && sleep 2' 'exec "$FW_FIXTURE"' >"$worker"
   chmod +x "$worker"
   # Legitimate silence on attempt 2 is sleep 2 + process startup <=1s + 1s integer-second truncation,
-  # approximately 4s <8s; tripled startup still stays under 8s, while counting cooldown makes the log >=15s old on attempt 2's first poll and gets caught. Observed ledger: start attempt 2 at :16, stall with log mtime frozen 3s at :19.
+  # approximately 4s <8s; tripled startup still stays under 8s. Counting cooldown as silence makes the log
+  # >=15s old on attempt 2's first poll and is still caught. Pre-fix flake (stall-after 3): attempt 2 started
+  # at :16, stalled at :19 with the log 3s old.
   FW_FIXTURE="$FIXTURE" FW_MODE=flaky FW_FAIL_TIMES=1 FW_STATE="$CASE_DIR/restart.state" \
     SITTER_HOME="$CASE_DIR/home-cooldown-crossing" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/cooldown-crossing.spy" \
     "$SITTER" run --ledger "$CASE_DIR/cooldown-crossing.jsonl" --on-fail "$SPY" \
