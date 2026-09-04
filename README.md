@@ -293,7 +293,7 @@ Part of the **Caty AI family** — open tools for running a family of AI agents.
 
 - **CI** — the badge above is live: every push to main and every pull request runs the full fault-injection suite (the case count is machine-reported by `make test`)
 - **Verified environments** — Ubuntu gates every pull request; macOS runs on every push to main; Windows (Git Bash) is a best-effort lane
-- **Maturity** — v0.3.1; the four v0 verbs (`run` / `expect` / `ack` / `sweep`) are spec-frozen in docs/requirements-v0.md, and `ask` / `watch` are pinned by docs/specs/prd-v0.2-ask-watch.md (audited in v0.2.0)
+- **Maturity** — v0.4.0; the four v0 verbs (`run` / `expect` / `ack` / `sweep`) are spec-frozen in docs/requirements-v0.md, and `ask` / `watch` are pinned by docs/specs/prd-v0.2-ask-watch.md (audited in v0.2.0)
 - **Known limitations** — the denylist is an accident guard, not a security wall; retries happen only for jobs you explicitly declared idempotent
 
 ---
