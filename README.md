@@ -186,7 +186,7 @@ sitter treats a job as frozen when it produces **no output at all — screen or 
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --stall-after 0 --timeout 3600 -- sh -c 'sleep 30; echo done'
 ```
 
-If the job is silent but a wrapper can cheaply vouch that it is still healthy, keep stall protection with `--heartbeat-file`. Use one heartbeat file per supervised run, never share it between runs, and have the wrapper touch it at least twice as often as `--stall-after` (mtimes are second-granular and sitter polls every 15 seconds).
+If the job is silent but a wrapper can cheaply vouch that it is still healthy, keep stall protection with `--heartbeat-file`. Use one heartbeat file per supervised run, never share it between runs, and have the wrapper touch it at least twice as often as `--stall-after` (mtimes are second-granular and sitter polls every 15 seconds). Inside the wrapper, keep the worker a single process (`exec` it) or forward `TERM` to its children; otherwise the wrapper's own kill paths leave grandchildren behind.
 
 ```sh
 sitter run --ledger ~/.sitter/runs.jsonl --on-fail 'cat >> ~/sitter-alerts.txt' --heartbeat-file ~/.sitter/heartbeats/quiet-worker --stall-after 900 --timeout 3600 -- ./examples/heartbeat-wrapper.sh

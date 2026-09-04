@@ -176,6 +176,7 @@ heartbeat_rejects_disabled_stall() {
 
 # ADR-0003 planned test 4: the new writable path refuses symlinks by default.
 heartbeat_symlink_is_refused() {
+  if ! symlinks_are_real; then printf 'SKIP heartbeat_symlink_is_refused: no real symlink support\n' >&2; return 0; fi
   local target="$CASE_DIR/target" heartbeat="$CASE_DIR/heartbeat" stderr="$CASE_DIR/symlink.stderr"
   : >"$target"
   ln -s "$target" "$heartbeat"
@@ -247,6 +248,7 @@ heartbeat_deleted_midrun_falls_back_to_log() {
 }
 
 heartbeat_symlink_swap_midrun_falls_back_to_log() {
+  if ! symlinks_are_real; then printf 'SKIP heartbeat_symlink_swap_midrun_falls_back_to_log: no real symlink support\n' >&2; return 0; fi
   local ledger="$CASE_DIR/swapped.jsonl" target="$CASE_DIR/swap-target"
   : >"$target"
   HB_MODE=symlink_swap HB_LINK_TARGET="$target" assert_exit 1 run_heartbeat_case swapped \
@@ -286,6 +288,7 @@ heartbeat_directory_path_is_refused() {
 }
 
 heartbeat_attempt_touch_failure_is_not_a_stall() {
+  if ! symlinks_are_real; then printf 'SKIP heartbeat_attempt_touch_failure_is_not_a_stall: no real symlink support\n' >&2; return 0; fi
   local allow="$CASE_DIR/allow" state="$CASE_DIR/state" target="$CASE_DIR/target" ledger="$CASE_DIR/attempt-touch.jsonl"
   : >"$target"
   printf '%s\n' "$HEARTBEAT_FIXTURE" >"$allow"
