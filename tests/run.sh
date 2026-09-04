@@ -769,7 +769,11 @@ term_trapping_hook_is_killed() {
   SITTER_HOME="$home" "$SITTER" expect --ledger "$ledger" --on-fail "$hook" --id term --sla 0
   started=$(date +%s)
   SITTER_HOME="$home" SITTER_HOOK_TIMEOUT=1 SITTER_HOOK_KILL_GRACE=1 "$SITTER" sweep --once --ledger "$ledger" --on-fail "$hook"
-  elapsed=$(( $(date +%s) - started )); ((elapsed <= 5))
+  # The hook ignores TERM and sleeps 60 s, so a sweep without its timeout takes at least 60 s.
+  # Thus 20 s keeps a 3x margin against that failure case; macOS runs this in 2-3 s.
+  # Windows CI's whole case took ~7 s wall; its sweep-only time is only known to exceed the old 5 s bound.
+  # POSIX hook death is covered by sibling hook_timeout_group_gate_kills_trapping_child; it skips on msys/cygwin.
+  elapsed=$(( $(date +%s) - started )); ((elapsed < 20))
 }
 
 hook_orphan_children_are_reaped() {
