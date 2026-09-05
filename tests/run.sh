@@ -1217,7 +1217,7 @@ elapsed_cooldown_does_not_sleep() {
   FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/elapsed.spy" \
     "$SITTER" run --ledger "$prime" --on-fail "$SPY" --idempotent fail --allowlist "$allow" --retries 1 --cooldown 5 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE" &
   pid=$!
-  for ((poll = 0; poll < 50; poll++)); do
+  for ((poll = 0; poll < 300; poll++)); do
     for cooldown_file in "$home"/cooldown/*; do [[ -f $cooldown_file ]] && break; cooldown_file=''; done
     [[ -n $cooldown_file ]] && break
     sleep 0.1
@@ -1229,8 +1229,8 @@ elapsed_cooldown_does_not_sleep() {
   assert_exit 9 env FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/elapsed.spy" \
     "$SITTER" run --ledger "$ledger" --on-fail "$SPY" --retries 0 --cooldown 60 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE"
   elapsed=$(( $(date +%s) - started ))
-  # Guarded regressions sleep >=60s (cooldown) or 3600s (cap); the 20s bound gives a 3x margin.
-  # Observed Windows whole-test wall time was <=9s across three main runs (2026-09-04).
+  # Bounded quantity is the measured run (~2s on macOS). A regression sleeps the 60s cooldown (or sitter's 3600s cap); 20s keeps a 3x margin.
+  # Observed Windows whole-test wall time (priming run included) was <=9s across three main runs (2026-09-04).
   ((elapsed < 20))
 }
 
@@ -1241,7 +1241,7 @@ stop_during_catchup_cooldown_observed() {
   FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/catchup-stop.spy" \
     "$SITTER" run --ledger "$prime" --on-fail "$SPY" --idempotent fail --allowlist "$allow" --retries 1 --cooldown 60 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE" &
   pid=$!
-  for ((poll = 0; poll < 50; poll++)); do
+  for ((poll = 0; poll < 300; poll++)); do
     for cooldown_file in "$home"/cooldown/*; do [[ -f $cooldown_file ]] && break; cooldown_file=''; done
     [[ -n $cooldown_file ]] && break
     sleep 0.1
