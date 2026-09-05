@@ -1217,7 +1217,7 @@ elapsed_cooldown_does_not_sleep() {
   FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/elapsed.spy" \
     "$SITTER" run --ledger "$prime" --on-fail "$SPY" --idempotent fail --allowlist "$allow" --retries 1 --cooldown 5 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE" &
   pid=$!
-  for ((poll = 0; poll < 50; poll++)); do
+  for ((poll = 0; poll < 300; poll++)); do
     for cooldown_file in "$home"/cooldown/*; do [[ -f $cooldown_file ]] && break; cooldown_file=''; done
     [[ -n $cooldown_file ]] && break
     sleep 0.1
@@ -1227,11 +1227,11 @@ elapsed_cooldown_does_not_sleep() {
   printf '0 %s\n' "$(( $(date +%s) - 1 ))" >"$cooldown_file"
   started=$(date +%s)
   assert_exit 9 env FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/elapsed.spy" \
-    "$SITTER" run --ledger "$ledger" --on-fail "$SPY" --retries 0 --cooldown 5 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE"
+    "$SITTER" run --ledger "$ledger" --on-fail "$SPY" --retries 0 --cooldown 60 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE"
   elapsed=$(( $(date +%s) - started ))
-  # Guarded regressions sleep >=5s (cooldown) or 3600s (cap); <5 keeps detection while absorbing full-suite startup load.
-  # Emulated-shell runners (MSYS/Cygwin, observational lane) are too slow for a wall-clock bound; detection stays enforced on the blocking POSIX lanes.
-  [[ ${OSTYPE:-} == msys* || ${OSTYPE:-} == cygwin* ]] || ((elapsed < 5))
+  # Bounded quantity is the measured run (~2s on macOS). A regression sleeps the 60s cooldown (or sitter's 3600s cap); 20s keeps a 3x margin.
+  # Observed Windows whole-test wall time (priming run included) was <=9s across three main runs (2026-09-04).
+  ((elapsed < 20))
 }
 
 # A kill switch must interrupt a persisted cooldown before any attempt starts.
@@ -1241,7 +1241,7 @@ stop_during_catchup_cooldown_observed() {
   FW_MODE=fail SITTER_HOME="$home" SITTER_POLL_INTERVAL=1 SPY_FILE="$CASE_DIR/catchup-stop.spy" \
     "$SITTER" run --ledger "$prime" --on-fail "$SPY" --idempotent fail --allowlist "$allow" --retries 1 --cooldown 60 --stall-after 2 --timeout 20 --grace 0 -- "$FIXTURE" &
   pid=$!
-  for ((poll = 0; poll < 50; poll++)); do
+  for ((poll = 0; poll < 300; poll++)); do
     for cooldown_file in "$home"/cooldown/*; do [[ -f $cooldown_file ]] && break; cooldown_file=''; done
     [[ -n $cooldown_file ]] && break
     sleep 0.1
@@ -1259,7 +1259,8 @@ stop_during_catchup_cooldown_observed() {
   wait "$pid"
   elapsed=$(( $(date +%s) - started ))
   grep -Eq '"event":"(refused|end)","status":"killed".*"detail":"kill switch present before launch"' "$ledger"
-  [[ ${OSTYPE:-} == msys* || ${OSTYPE:-} == cygwin* ]] || ((elapsed < 20))
+  # 60s persisted cooldown vs 20s bound; observed Windows whole-test wall time <=6s.
+  ((elapsed < 20))
   ! grep -q '"event":"start"' "$ledger"
 }
 
@@ -1281,7 +1282,8 @@ stop_during_backoff_observed() {
   elapsed=$(( $(date +%s) - started ))
   # Both details prove the 60s backoff was interrupted; STOP may land before or after the pre-sleep kill check, and the slow-runner window includes ledger lock release plus temp cleanup after restart append.
   grep -Eq '"event":"end","status":"killed".*"detail":"(kill switch present before launch|kill switch stopped before restart)"' "$ledger"
-  [[ ${OSTYPE:-} == msys* || ${OSTYPE:-} == cygwin* ]] || ((elapsed < 20))
+  # 60s restart backoff vs 20s bound; observed Windows whole-test wall time <=6s.
+  ((elapsed < 20))
 }
 
 denylist_exact_eight_env_layers() {
