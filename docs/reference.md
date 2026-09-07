@@ -46,8 +46,6 @@ sitter sweep --once --ledger <path> --on-fail <cmd>
 sitter --help | -h | --version
 ```
 
-The default log (`$SITTER_HOME/logs/${RUN_ID}.log`) contains only one run's output, while a fixed `--log` path grows across runs and must be rotated by the operator between runs, never during a run: the child keeps its log descriptor open, so rotation can separate its output from the path's mtime used as the stall clock or discard output.
-
 Stall detection is evaluated at 15-second granularity; timeout polling uses
 the remaining timeout when it is shorter, so short timeouts are still honored.
 `--stall-after 0` without `--timeout` is refused at startup.
@@ -71,6 +69,8 @@ the worker a single process (`exec` it) or forward `TERM` to its children;
 otherwise the wrapper's own kill paths leave grandchildren behind. `expect`,
 `ack`, and `sweep` parse and ignore the option like `--stall-after`; `ask` and
 `watch` refuse it.
+
+The default log (`$SITTER_HOME/logs/${RUN_ID}.log`) contains only one run's output. A fixed `--log` path grows across runs and must be rotated by the operator between runs, never during a run. The child keeps its log descriptor open, so rotation during a run can separate its output from the path's mtime used as the stall clock or discard output.
 
 ## Reply tracking in detail
 
@@ -139,7 +139,7 @@ that contract is stable today.
 
 ## Sweep operational detail
 
-Sweeps serialize, holding the lock while waiting for each due expectation's hook up to `SITTER_HOOK_TIMEOUT` (default 30 seconds), so hung hooks delay the next sweep's opportunity to run by that wait per due expectation, plus hook termination/reaping grace and sweep processing overhead.
+Sweeps serialize and hold the lock while waiting for hooks. Each due expectation's hook is allowed up to `SITTER_HOOK_TIMEOUT` (default 30 seconds). Hung hooks delay the next sweep's opportunity to run by that wait per due expectation, plus hook termination/reaping grace and sweep processing overhead.
 
 The sweep lock lives under `$SITTER_HOME`, so overlapping scheduler
 invocations normally exit successfully without doing work. A kill-switch file

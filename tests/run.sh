@@ -12,7 +12,7 @@ HEARTBEAT_FIXTURE="$ROOT/tests/fixtures/heartbeat-worker.sh"
 
 string_fast_paths_preserve_bytes() {
   load_sitter_functions
-  local name value byte octet i size reference iterations=0
+  local name value byte octet i size reference clean_iterations iterations=0
   local corpus=('' 'ordinary ASCII / path - %s' $'日本語🙂' $'bad\x80\xff' $'"\\')
   for ((i = 1; i <= 255; i++)); do
     printf -v octet '%03o' "$i"
@@ -39,10 +39,17 @@ string_fast_paths_preserve_bytes() {
     set -T
     trap 'if [[ $BASH_COMMAND == "ch=\${value:i:1}" ]]; then iterations=$((iterations + 1)); fi' DEBUG
     "$name" 'ordinary ASCII / 日本語 / invalid:'$'\x80\xff' >"$CASE_DIR/fast"
+    clean_iterations=$iterations
+    iterations=0
+    "$name" $'dirty\x01"\\' >"$CASE_DIR/dirty"
     trap - DEBUG
     set +T
-    [[ $iterations -eq 0 ]] || {
-      printf '%s: clean input still used %s byte iterations\n' "$name" "$iterations" >&2
+    [[ $iterations -gt 0 ]] || {
+      printf '%s: dirty input positive control recorded no byte iterations\n' "$name" >&2
+      return 1
+    }
+    [[ $clean_iterations -eq 0 ]] || {
+      printf '%s: clean input still used %s byte iterations\n' "$name" "$clean_iterations" >&2
       return 1
     }
   done
