@@ -220,3 +220,5 @@ makes signal-timing cases fragile.
 
 CI therefore runs Git Bash as a non-blocking job, and WSL remains the
 supported path.
+
+`sweep --once` stops with a nonzero status if its ledger snapshot or live-tail read fails; no candidate is emitted from an unreadable snapshot or tail.

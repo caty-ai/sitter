@@ -7,9 +7,9 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BENCH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sitter-bench.XXXXXX")
 trap 'rm -rf "$BENCH_DIR"' EXIT
 
-git -C "$ROOT" show origin/main:sitter >"$BENCH_DIR/sitter.before"
+cp "$ROOT/tests/fixtures/sitter.baseline" "$BENCH_DIR/sitter.before"
 cp "$ROOT/sitter" "$BENCH_DIR/sitter.after"
-chmod +x "$BENCH_DIR/sitter.before" "$BENCH_DIR/sitter.after"
+chmod 644 "$BENCH_DIR/sitter.before" "$BENCH_DIR/sitter.after"
 printf '# seconds; 3 reused ids, 1 SLA-due; mixed v0/v1, poison and run records\n'
 printf 'lines\tversion\tsweep_seconds\twatch_seconds\n'
 for size in 1000 10000 50000; do
@@ -24,7 +24,7 @@ for size in 1000 10000 50000; do
       [[ $verb != sweep ]] || args+=(--on-fail true)
       printf '# running %s %s %s\n' "$size" "$version" "$verb" >&2
       TIMEFORMAT='%3R'
-      if { time SITTER_HOME="$case_dir/home" "$BENCH_DIR/sitter.$version" "${args[@]}" \
+      if { time SITTER_SWEEP_LOCKED=true SITTER_HOME="$case_dir/home" bash "$BENCH_DIR/sitter.$version" "${args[@]}" \
           >"$case_dir/stdout" 2>"$case_dir/stderr"; } 2>"$case_dir/time"; then
         :
       else

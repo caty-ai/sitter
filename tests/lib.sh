@@ -107,64 +107,17 @@ run_test() {
   fi
 }
 
-# Frozen sed-based oracle from origin/main (77b3bd9), kept verbatim except its name.
-# shellcheck disable=SC2034 # REPLAY globals are inspected indirectly and by tests/run.sh
-reference_expect_replay_line() {
-  local line=$1 id ts state event to text_value sla nudges schema reply_file reply_bytes reply_sha reply_sha_field
-  if [[ $line == *'"schema":"sitter.v0"'* && $line == *'"expect_id":'* ]]; then
-    schema=sitter.v0
-  elif [[ $line == *'"schema":"sitter.v1"'* ]]; then
-    schema=sitter.v1
-  else
-    return 0
-  fi
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"expect_id":"\([^"]*\)".*/\1/p')
-  [[ -n $id ]] || return 2
-  if ! valid_expect_id "$id"; then
-    [[ $schema == sitter.v1 ]] && return 2
-    return 0
-  fi
-  ts=$(printf '%s\n' "$line" | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')
-  event=$(printf '%s\n' "$line" | sed -n 's/.*"event":"\([^"]*\)".*/\1/p')
-  state=$(printf '%s\n' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
-  [[ -n $ts && -n $state && -n $event ]] || return 2
-  if [[ $schema == sitter.v0 ]]; then
-    case $state in pending|nudged1|nudged2|awaiting_human|acked|quarantined) ;; *) return 2 ;; esac
-  else
-    case $state in pending|acked|prepared|send_failed) ;; *) return 2 ;; esac
-  fi
-  to=$(printf '%s\n' "$line" | sed -n 's/.*"to":"\([^"]*\)".*/\1/p')
-  text_value=$(printf '%s\n' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
-  if [[ $schema == sitter.v1 ]]; then
-    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([^,}]*\).*/\1/p')
-    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([^,}]*\).*/\1/p')
-  else
-    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([0-9][0-9]*\).*/\1/p')
-    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([0-9][0-9]*\).*/\1/p')
-  fi
-  is_uint "$sla" && is_uint "$nudges" || return 2
-  reply_file='' reply_bytes=null reply_sha=null
-  if [[ $schema == sitter.v1 ]]; then
-    case "$event:$state" in
-      ask_prepare:prepared|expect:pending|ask_send_failed:send_failed|refused:acked) ;;
-      *) return 2 ;;
-    esac
-    reply_file=$(printf '%s\n' "$line" | sed -n 's/.*"reply_file":"\([^"]*\)".*/\1/p')
-    [[ -n $reply_file ]] && valid_reply_path "$reply_file" || return 2
-    reply_bytes=$(printf '%s\n' "$line" | sed -n 's/.*"reply_bytes":\([^,}]*\).*/\1/p')
-    [[ $reply_bytes == null ]] || is_uint "$reply_bytes" || return 2
-    reply_sha_field=$(printf '%s\n' "$line" | sed -n 's/.*"reply_sha256":\([^,}]*\).*/\1/p')
-    if [[ $reply_sha_field == null ]]; then
-      reply_sha=null
-    else
-      [[ $reply_sha_field =~ ^\"[0-9a-f]{64}\"$ ]] || return 2
-      reply_sha=${reply_sha_field:1:${#reply_sha_field}-2}
-    fi
-    if [[ $reply_bytes == null && $reply_sha != null ]] || [[ $reply_bytes != null && $reply_sha == null ]]; then return 2; fi
-  fi
-  REPLAY_ID=$id REPLAY_TS=$ts REPLAY_EVENT=$event REPLAY_STATE=$state REPLAY_TO=$to REPLAY_TEXT=$text_value REPLAY_SLA=$sla
-  REPLAY_SCHEMA=$schema REPLAY_REPLY_FILE=$reply_file REPLAY_REPLY_BYTES=$reply_bytes REPLAY_REPLY_SHA=$reply_sha
-  return 1
+# Frozen baseline: 77b3bd9 (pre-single-pass implementation).
+load_reference_replay() {
+  local definitions="$CASE_DIR/reference-functions.sh"
+  awk '
+    /^expect_replay_line\(\)/ {copy=1; sub(/expect_replay_line/, "reference_expect_replay_line")}
+    /^valid_reply_path\(\)/ {copy=1; sub(/valid_reply_path/, "reference_valid_reply_path")}
+    copy {gsub(/valid_reply_path /, "reference_valid_reply_path "); print}
+    copy && /^}/ {copy=0}
+  ' "$TEST_ROOT/tests/fixtures/sitter.baseline" >"$definitions"
+  # shellcheck source=/dev/null
+  source "$definitions"
 }
 
 # Load definitions without running the CLI dispatcher, in the caller's subshell.
@@ -173,6 +126,7 @@ load_sitter_functions() {
   awk '/^\[\[ \$# -ge 1 \]\]/ {exit} {print}' "$SITTER" >"$definitions"
   # shellcheck source=/dev/null
   source "$definitions"
+  load_reference_replay
 }
 
 assert_replay_equivalent() {
@@ -181,8 +135,15 @@ assert_replay_equivalent() {
     REPLAY_SCHEMA REPLAY_REPLY_FILE REPLAY_REPLY_BYTES REPLAY_REPLY_SHA)
   local old_values=()
   for field in "${fields[@]}"; do printf -v "$field" 'sentinel:%s' "$field"; done
-  reference_expect_replay_line "$line" || old_rc=$?
-  for field in "${fields[@]}"; do old_values+=("${!field}"); done
+  # Isolate the baseline's unexported LC_ALL leak from the production call.
+  local value
+  while IFS= read -r -d '' value; do old_values+=("$value"); done < <(
+    reference_expect_replay_line "$line" 2>/dev/null || old_rc=$?
+    printf '%s\0' "$old_rc"
+    for field in "${fields[@]}"; do printf '%s\0' "${!field}"; done
+  )
+  old_rc=${old_values[0]}
+  old_values=("${old_values[@]:1}")
   for field in "${fields[@]}"; do printf -v "$field" 'sentinel:%s' "$field"; done
   expect_replay_line "$line" || new_rc=$?
   [[ $old_rc -eq $new_rc ]] || { printf 'replay rc mismatch %s: %s / %s\n' "$label" "$old_rc" "$new_rc" >&2; return 1; }

@@ -8,7 +8,7 @@ set -euo pipefail
   printf 'usage: %s <lines> <out>\n' "$0" >&2
   exit 2
 }
-awk -v count="$1" '
+LC_ALL=C awk -v count="$1" '
 function record(schema, id, event, state, extra, numeric, text) {
   if (numeric == "") numeric="\"sla_s\":1,\"nudges\":0"
   if (text == "") text="進捗確認 café"
@@ -43,6 +43,7 @@ BEGIN {
     else if (slot==11) record(0,"done","refused","acked","","\"sla_s\":12junk,\"nudges\":03junk")
     else if (slot==12) record(1,"due","expect","pending","","\"sla_s\":12junk,\"nudges\":0")
     else if (slot==13) record(1,"due","expect","unknown")
+    else if (slot==15) record(0,"invalid-byte","expect","pending","","",sprintf("bad%c",255))
     else if (slot==14) print "{\"schema\":\"sitter.v1\",\"expect_id\":\"\"}"
     else printf "{\"ts\":\"2000-01-01T00:00:00.000Z\",\"event\":\"run\",\"status\":\"ok\",\"schema\":\"sitter.v0\",\"attempt\":%d,\"detail\":\"completed\"}\n",i
   }

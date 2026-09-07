@@ -2177,11 +2177,20 @@ aw_81_malformed_del_reply_file_row_is_poison_consistently() {
 
 # The oracle preserves rejected-line globals as well as successful extraction.
 ledger_replay_equivalence() {
+  unset LC_ALL LC_CTYPE
+  export LANG=C.UTF-8
   load_sitter_functions
-  local ledger="$CASE_DIR/generated.jsonl" line n=0 rc=0 saw_skip=0 saw_poison=0 saw_v0=0 saw_v1=0
+  local ledger="$CASE_DIR/generated.jsonl" line n=0 rc=0 saw_skip=0 saw_poison=0 saw_v0=0 saw_v1=0 saw_invalid=0
   bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$ledger"
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))
+    if [[ $line == *$'\xff'* ]]; then
+      [[ $saw_v1 -eq 1 ]]
+      saw_invalid=1
+      # An unexported caller locale must not affect the external-sed oracle
+      # or the native matcher, including the matcher's first invocation.
+      ( unset REPLAY_MATCH_LOCALE; LC_ALL=C; assert_replay_equivalent "$line" caller-locale )
+    fi
     assert_replay_equivalent "$line" "$n"
     rc=0; expect_replay_line "$line" || rc=$?
     case $rc in
@@ -2190,7 +2199,7 @@ ledger_replay_equivalence() {
       1) if [[ $REPLAY_SCHEMA == sitter.v0 ]]; then saw_v0=1; else saw_v1=1; fi ;;
     esac
   done <"$ledger"
-  [[ $n -eq 2000 && $saw_skip -eq 1 && $saw_poison -eq 1 && $saw_v0 -eq 1 && $saw_v1 -eq 1 ]]
+  [[ $n -eq 2000 && $saw_skip -eq 1 && $saw_poison -eq 1 && $saw_v0 -eq 1 && $saw_v1 -eq 1 && $saw_invalid -eq 1 ]]
   line='{"schema":"sitter.v0","expect_id":"first","ts":"old","event":"ack","state":"acked","to":"first","text":"first","sla_s":1,"nudges":0,"expect_id":"last","ts":"new","event":"expect","state":"pending","to":"last","text":"日本語 café \"quoted","sla_s":12junk,"nudges":03junk,"sla_s":oops}'
   assert_replay_equivalent "$line" duplicate-keys
   [[ $REPLAY_ID == last && $REPLAY_TS == new && $REPLAY_EVENT == expect && $REPLAY_STATE == pending && $REPLAY_TO == last && $REPLAY_SLA == 12 && $REPLAY_TEXT == "日本語 café \\" ]]
@@ -2202,22 +2211,25 @@ ledger_replay_equivalence() {
 }
 
 ledger_sweep_equivalence() {
-  local input="$CASE_DIR/generated.jsonl" ref="$CASE_DIR/sitter.ref" which ledger
-  git -C "$ROOT" show origin/main:sitter >"$ref"
-  chmod +x "$ref"
+  unset LC_ALL LC_CTYPE
+  export LANG=C.UTF-8
+  local input="$CASE_DIR/generated.jsonl" ref="$ROOT/tests/fixtures/sitter.baseline" which ledger
   bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$input"
   for which in ref new; do
     ledger="$CASE_DIR/replay.jsonl"
     cp "$input" "$ledger"
     local script=$SITTER
     [[ $which != ref ]] || script=$ref
-    SITTER_HOME="$CASE_DIR/home-$which" SPY_FILE="$CASE_DIR/$which.spy" \
+    # Both run under bash: the non-executable oracle cannot lockf-reexec itself.
+    SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$which" SPY_FILE="$CASE_DIR/$which.spy" \
       bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err"
     # Only the clock and process-derived event id are nondeterministic.
     tail -n +2001 "$ledger" | sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
   done
   cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
-  cmp "$CASE_DIR/ref.err" "$CASE_DIR/new.err"
+  # BSD sed diagnoses invalid UTF-8; the native matcher rejects it silently.
+  sed '/[Ii]llegal byte sequence/d' "$CASE_DIR/ref.err" >"$CASE_DIR/ref.filtered.err"
+  cmp "$CASE_DIR/ref.filtered.err" "$CASE_DIR/new.err"
   cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
   grep -q '"event":"nudge".*"expect_id":"due"' "$CASE_DIR/new.tail"
 }
@@ -2225,14 +2237,20 @@ ledger_sweep_equivalence() {
 # Raw control bytes are accepted by the old extractor even though they are
 # invalid JSON. Preserve the reducer and shell-read behavior on those records.
 ledger_sweep_control_byte_equivalence() {
-  local ref="$CASE_DIR/sitter.ref" mode which script rc ledger input before
-  git -C "$ROOT" show origin/main:sitter >"$ref"
-  chmod +x "$ref"
-  for mode in tab-refused field-separator; do
+  unset LC_ALL LC_CTYPE
+  export LANG=C.UTF-8
+  local ref="$ROOT/tests/fixtures/sitter.baseline" mode which script rc ledger input before
+  for mode in tab-refused field-separator invalid-utf8 invalid-utf8-first; do
     input="$CASE_DIR/$mode.input"
     printf '%s\n' '{"schema":"sitter.v0","expect_id":"control","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"'"$([[ $mode == field-separator ]] && printf 'left\034right' || printf text)"'","sla_s":0,"nudges":0}' >"$input"
     if [[ $mode == tab-refused ]]; then
-      printf '%s\n' '{"schema":"sitter.v1","expect_id":"control","ts":"2000-01-01T00:00:00.000Z","event":"refused","state":"acked","text":"left'"$'\t'"'right","sla_s":0,"nudges":0,"reply_file":"/missing/reply","reply_bytes":null,"reply_sha256":null}' >>"$input"
+      printf '%s\n' '{"schema":"sitter.v1","expect_id":"control","ts":"2000-01-01T00:00:00.000Z","event":"refused","state":"acked","text":"left'$'\t''right","sla_s":0,"nudges":0,"reply_file":"/missing/reply","reply_bytes":null,"reply_sha256":null}' >>"$input"
+    fi
+    if [[ $mode == invalid-utf8* ]]; then
+      local primer='{"schema":"sitter.v1","expect_id":"prepared","ts":"2000-01-01T00:00:00.000Z","event":"ask_prepare","state":"prepared","sla_s":0,"nudges":0,"reply_file":"/x/reply.txt","reply_bytes":null,"reply_sha256":null}'
+      local invalid='{"schema":"sitter.v0","expect_id":"invalid-byte","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"bad'$'\xff''","sla_s":0,"nudges":0}'
+      if [[ $mode == invalid-utf8 ]]; then printf '%s\n' "$primer" "$invalid" >"$input"
+      else printf '%s\n' "$invalid" "$primer" >"$input"; fi
     fi
     before=$(wc -l <"$input")
     for which in ref new; do
@@ -2240,17 +2258,17 @@ ledger_sweep_control_byte_equivalence() {
       cp "$input" "$ledger"
       script=$SITTER; [[ $which != ref ]] || script=$ref
       rc=0
-      SITTER_HOME="$CASE_DIR/home-$mode-$which" SPY_FILE="$CASE_DIR/$mode-$which.spy" \
+      SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$mode-$which" SPY_FILE="$CASE_DIR/$mode-$which.spy" \
         bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err" || rc=$?
       printf '%s\n' "$rc" >"$CASE_DIR/$which.rc"
       tail -n +"$((before + 1))" "$ledger" | sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
-      sed -E 's@^.*: line [0-9]+:@SCRIPT: line N:@' "$CASE_DIR/$which.err" >"$CASE_DIR/$which.normalized.err"
+      sed -E '/[Ii]llegal byte sequence/d; s@^.*: line [0-9]+:@SCRIPT: line N:@' "$CASE_DIR/$which.err" >"$CASE_DIR/$which.normalized.err"
     done
     cmp "$CASE_DIR/ref.rc" "$CASE_DIR/new.rc"
     cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
     cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
     cmp "$CASE_DIR/ref.normalized.err" "$CASE_DIR/new.normalized.err"
-    [[ ! -s $CASE_DIR/new.tail ]]
+    if [[ $mode != invalid-utf8* || $OSTYPE == darwin* ]]; then [[ ! -s $CASE_DIR/new.tail ]]; fi
   done
 }
 
@@ -2263,12 +2281,16 @@ ledger_sweep_staged_ack_race() {
 set -euo pipefail
 "$REAL_CP" "$@"
 if [[ $1 == "$RACE_LEDGER" && $2 == *'.sitter-sweep.'* ]]; then
-  cat "$RACE_APPEND" >>"$RACE_LEDGER"
+  if [[ ${RACE_REPLACE:-false} == true ]]; then
+    "$REAL_CP" "$RACE_APPEND" "$RACE_LEDGER"
+  else
+    cat "$RACE_APPEND" >>"$RACE_LEDGER"
+  fi
   : >"$RACE_MARKER"
 fi
 EOF
   chmod +x "$bin/cp"
-  for mode in complete partial; do
+  for mode in complete partial shorter; do
     ledger="$CASE_DIR/$mode.jsonl"
     printf '%s\n' '{"schema":"sitter.v0","expect_id":"race","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","to":"worker","text":"race","sla_s":0,"nudges":0}' >"$ledger"
     if [[ $mode == partial ]]; then
@@ -2277,12 +2299,60 @@ EOF
     else
       printf '%s\n' '{"schema":"sitter.v0","expect_id":"race","ts":"2000-01-01T00:00:00.000Z","event":"ack","state":"acked","sla_s":0,"nudges":0}' >"$CASE_DIR/append"
     fi
+    [[ $mode != shorter ]] || [[ $(wc -c <"$CASE_DIR/append") -lt $(wc -c <"$ledger") ]]
+    RACE_REPLACE=$([[ $mode == shorter ]] && printf true || printf false) \
     PATH="$bin:$PATH" REAL_CP="$real_cp" RACE_LEDGER="$ledger" RACE_APPEND="$CASE_DIR/append" RACE_MARKER="$CASE_DIR/$mode.mark" \
       SITTER_HOME="$CASE_DIR/home-$mode" SPY_FILE="$CASE_DIR/$mode.spy" \
       "$SITTER" sweep --once --ledger "$ledger" --on-fail "$SPY"
     [[ -f $CASE_DIR/$mode.mark ]]
     if grep -q '"event":"nudge"' "$ledger"; then return 1; fi
     assert_spy_count 0 "$CASE_DIR/$mode.spy"
+  done
+}
+
+ledger_sweep_io_failure_cleanup() {
+  local mode ledger bin="$CASE_DIR/bin" real_cp real_tail rc home
+  real_cp=$(command -v cp); real_tail=$(command -v tail)
+  mkdir "$bin"
+  cat >"$bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ $FAIL_MODE == copy && $2 == *'.sitter-sweep.'* ]]; then exit 42; fi
+exec "$REAL_CP" "$@"
+EOF
+  cat >"$bin/tail" <<'EOF'
+#!/usr/bin/env bash
+if [[ $FAIL_MODE == tail && $1 == -c && $2 == +* ]]; then exit 43; fi
+exec "$REAL_TAIL" "$@"
+EOF
+  chmod +x "$bin/cp" "$bin/tail"
+  for mode in copy tail emit empty; do
+    ledger="$CASE_DIR/$mode.jsonl"; home="$CASE_DIR/home-$mode"
+    printf '%s\n' '{"schema":"sitter.v0","expect_id":"failure","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"due","sla_s":0,"nudges":0}' >"$ledger"
+    [[ $mode != empty ]] || : >"$ledger"
+    rc=0
+    if [[ $mode == emit ]]; then
+      load_sitter_functions
+      # Inject a late errexit after delta allocation, without a production seam.
+      # Run as an unguarded child so errexit remains enabled inside sweep_locked.
+      cat >"$CASE_DIR/fail-emit.sh" <<'EOF'
+source "$DEFINITIONS"
+LEDGER=$FAIL_LEDGER ON_FAIL=true SWEEP_ONCE=true KILL_FILE="$SITTER_HOME/STOP"
+emit_expect_event() { return 44; }
+sweep
+EOF
+      DEFINITIONS="$CASE_DIR/sitter-functions.sh" FAIL_LEDGER="$ledger" \
+        SITTER_SWEEP_LOCKED=true SITTER_HOME="$home" \
+        bash "$CASE_DIR/fail-emit.sh" >"$CASE_DIR/$mode.out" 2>"$CASE_DIR/$mode.err" || rc=$?
+    else
+      PATH="$bin:$PATH" REAL_CP="$real_cp" REAL_TAIL="$real_tail" FAIL_MODE="$mode" \
+        SITTER_SWEEP_LOCKED=true SITTER_HOME="$home" SPY_FILE="$CASE_DIR/$mode.spy" \
+        bash "$SITTER" sweep --once --ledger "$ledger" --on-fail "$SPY" || rc=$?
+    fi
+    case $mode in empty) [[ $rc -eq 0 ]] ;; emit) [[ $rc -eq 44 ]] ;; *) [[ $rc -eq 1 ]] ;; esac
+    if grep -q '"event":"nudge"' "$ledger"; then return 1; fi
+    assert_spy_count 0 "$CASE_DIR/$mode.spy"
+    local leftovers=("$home"/.sitter-sweep.* "$home"/.sitter-replay.* "$home"/.sitter-delta.*) file
+    for file in "${leftovers[@]}"; do [[ ! -e $file ]]; done
   done
 }
 
@@ -2379,7 +2449,7 @@ grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/nul
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"
