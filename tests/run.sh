@@ -57,7 +57,7 @@ truncate_utf8_fallback_matches_iconv() {
         # libiconv on macOS accepts these non-RFC-3629 forms — above U+10FFFF
         # and 5/6-byte — so only the fallback is pinned for them.
         case ${cases[index]} in
-          $'\xf4'[$'\x90'-$'\xbf']* | [$'\xf5'-$'\xff']*) continue ;;
+          $'\xf4'[$'\x90'-$'\xbf']* | [$'\xf5'-$'\xfd']*) continue ;;
         esac
       fi
       printf '%s' "${cases[index+2]}" >"$CASE_DIR/expected"
