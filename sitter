@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Release version of this file. CI's tag job requires the pushed git tag to
 # equal "v$SITTER_VERSION", so bump this in the same commit as a release.
-SITTER_VERSION='0.5.0'
+SITTER_VERSION='0.5.1'
 
 usage() {
   cat <<'EOF'
@@ -35,6 +35,10 @@ timestamp() { date -u '+%Y-%m-%dT%H:%M:%S.000Z'; }
 json_quote() {
   local value=$1 ch code i escaped=''
   LC_ALL=C
+  if [[ $value != *[\"\\$'\x01'-$'\x1f']* ]]; then
+    printf '"%s"' "$value"
+    return
+  fi
   for ((i = 0; i < ${#value}; i++)); do
     ch=${value:i:1}
     case $ch in
@@ -62,6 +66,10 @@ valid_expect_id() { [[ $1 =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
 sanitize_expect_value() {
   local value=$1 ch i clean=''
   LC_ALL=C
+  if [[ $value != *[\"\\$'\x01'-$'\x1f']* ]]; then
+    printf '%s' "$value"
+    return
+  fi
   for ((i = 0; i < ${#value}; i++)); do
     ch=${value:i:1}
     case $ch in

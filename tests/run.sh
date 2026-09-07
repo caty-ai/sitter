@@ -10,6 +10,51 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/tests/lib.sh"
 HEARTBEAT_FIXTURE="$ROOT/tests/fixtures/heartbeat-worker.sh"
 
+string_fast_paths_preserve_bytes() {
+  load_sitter_functions
+  local name value byte octet i size reference clean_iterations iterations=0
+  local corpus=('' 'ordinary ASCII / path - %s' $'日本語🙂' $'bad\x80\xff' $'"\\')
+  for ((i = 1; i <= 255; i++)); do
+    printf -v octet '%03o' "$i"
+    printf -v byte '%b' "\\$octet"
+    corpus+=("a${byte}z")
+    value=${value:-}$byte
+  done
+  corpus+=("$value")
+  for size in 4096 65536; do
+    value=$(printf '%*s' "$size" '' | tr ' ' x)
+    corpus+=("$value" "${value}"$'\n"\\\x01\x80\xff')
+  done
+  for name in json_quote sanitize_expect_value; do
+    reference=$(sed -n "/^$name() {/,/^}/p" "$ROOT/tests/fixtures/sitter.baseline")
+    eval "${reference/$name()/reference_string()}"
+    for value in "${corpus[@]}"; do
+      reference_string "$value" >"$CASE_DIR/expected"
+      "$name" "$value" >"$CASE_DIR/actual"
+      cmp "$CASE_DIR/expected" "$CASE_DIR/actual"
+    done
+    # Count byte extraction work, not elapsed time: clean strings must avoid
+    # the per-byte loop. DEBUG inheritance is supported by both bash versions.
+    iterations=0
+    set -T
+    trap 'if [[ $BASH_COMMAND == "ch=\${value:i:1}" ]]; then iterations=$((iterations + 1)); fi' DEBUG
+    "$name" 'ordinary ASCII / 日本語 / invalid:'$'\x80\xff' >"$CASE_DIR/fast"
+    clean_iterations=$iterations
+    iterations=0
+    "$name" $'dirty\x01"\\' >"$CASE_DIR/dirty"
+    trap - DEBUG
+    set +T
+    [[ $iterations -gt 0 ]] || {
+      printf '%s: dirty input positive control recorded no byte iterations\n' "$name" >&2
+      return 1
+    }
+    [[ $clean_iterations -eq 0 ]] || {
+      printf '%s: clean input still used %s byte iterations\n' "$name" "$clean_iterations" >&2
+      return 1
+    }
+  done
+}
+
 # ① successful run; ⑤ a regularly writing worker never stalls.
 normal() {
   FW_MODE=ok run_case normal -- "$FIXTURE"
@@ -2510,7 +2555,7 @@ grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/nul
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in string_fast_paths_preserve_bytes ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"
