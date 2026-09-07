@@ -129,6 +129,47 @@ load_sitter_functions() {
   load_reference_replay
 }
 
+# The fixtures identify the invalid-UTF-8 class with a raw 0xff byte.
+replay_has_invalid_byte() {
+  local LC_ALL=C
+  [[ $1 == *$'\xff'* ]]
+}
+
+# Probe extraction semantics, not the host name: non-system sed is supported.
+probe_reference_invalid_utf8() {
+  ORACLE_INVALID_RC=$(
+    load_sitter_functions
+    local rc=0
+    reference_expect_replay_line '{"schema":"sitter.v0","expect_id":"invalid-byte","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"bad'$'\xff''","sla_s":0,"nudges":0}' 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+  )
+  [[ $ORACLE_INVALID_RC == 1 || $ORACLE_INVALID_RC == 2 ]]
+}
+
+# Assert the complete row independently: truncate_utf8 emits bad for bad + 0xff.
+assert_invalid_byte_nudge() {
+  local actual=$1 to=$2 sla=$3
+  LC_ALL=C sed -n '/"expect_id":"invalid-byte"/p' "$actual" |
+    LC_ALL=C sed -E 's/"cwd":"[^"]*"/"cwd":"CWD"/' >"$CASE_DIR/invalid.actual"
+  printf '%s\n' '{"ts":"CLOCK","event":"nudge","status":"","project":"","agent":"","task":"","attempt":0,"detail":"","sessionId":"","cwd":"CWD","schema":"sitter.v0","event_id":"EVENT","run_id":"","exit_code":null,"log_path":"","stall_s":0,"reason":"","retries":0,"cooldown_s":0,"idempotent":false,"detail_truncated":false,"hook_exit_code":null,"expect_id":"invalid-byte","to":"'"$to"'","text":"bad","sla_s":'"$sla"',"nudges":1,"state":"nudged1"}' >"$CASE_DIR/invalid.expected"
+  if replay_has_invalid_byte "$(cat "$CASE_DIR/invalid.actual")"; then
+    printf 'emitted invalid-byte nudge contains raw 0xff\n' >&2
+    return 1
+  fi
+  cmp "$CASE_DIR/invalid.expected" "$CASE_DIR/invalid.actual"
+}
+
+assert_sweep_tails_equivalent() {
+  local label=$1
+  if [[ $ORACLE_INVALID_RC == 1 ]]; then
+    cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
+  else
+    LC_ALL=C sed '/"expect_id":"invalid-byte"/d' "$CASE_DIR/new.tail" >"$CASE_DIR/new.other.tail"
+    cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.other.tail"
+    printf '%s: known BSD-style oracle divergence: invalid UTF-8 rc 2; nudge with UTF-8 text bad and no 0xff asserted\n' "$label"
+  fi
+}
+
 assert_replay_equivalent() {
   local line=$1 label=$2 field old_rc=0 new_rc=0 i=0
   local fields=(REPLAY_ID REPLAY_TS REPLAY_EVENT REPLAY_STATE REPLAY_TO REPLAY_TEXT REPLAY_SLA
@@ -146,6 +187,14 @@ assert_replay_equivalent() {
   old_values=("${old_values[@]:1}")
   for field in "${fields[@]}"; do printf -v "$field" 'sentinel:%s' "$field"; done
   expect_replay_line "$line" || new_rc=$?
+  if replay_has_invalid_byte "$line"; then
+    [[ $new_rc -eq 1 && $REPLAY_TEXT == $'bad\xff' ]]
+    [[ $old_rc -eq $ORACLE_INVALID_RC ]]
+    if [[ $old_rc -eq 2 ]]; then
+      printf 'ledger_replay_equivalence %s: known BSD-style oracle divergence: rc 2; new rc 1 and raw text asserted\n' "$label"
+      return 0
+    fi
+  fi
   [[ $old_rc -eq $new_rc ]] || { printf 'replay rc mismatch %s: %s / %s\n' "$label" "$old_rc" "$new_rc" >&2; return 1; }
   for field in "${fields[@]}"; do
     [[ ${old_values[i]} == "${!field}" ]] || {

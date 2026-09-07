@@ -399,12 +399,8 @@ timestamp_epoch() {
 expect_replay_line() {
   local line=$1 id ts state event to text_value sla nudges schema reply_file reply_bytes reply_sha reply_sha_field
   local field name pattern remaining part value
-  # Cache the locale seen by sed children, excluding unexported shell state.
-  # Lazy initialization keeps this confined to replay and costs once per reader.
-  if [[ ! ${REPLAY_MATCH_LOCALE+x} ]]; then
-    REPLAY_MATCH_LOCALE=$(sh -c 'printf "%s" "${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}"')
-  fi
-  local LC_ALL=$REPLAY_MATCH_LOCALE
+  # Replay treats invalid UTF-8 as ordinary bytes on every platform.
+  local LC_ALL=C
   if [[ $line == *'"schema":"sitter.v0"'* && $line == *'"expect_id":'* ]]; then
     schema=sitter.v0
   elif [[ $line == *'"schema":"sitter.v1"'* ]]; then
@@ -1055,7 +1051,7 @@ watch() {
       "$REPLAY_STATE" "$REPLAY_REPLY_FILE" "$REPLAY_REPLY_BYTES" "$REPLAY_REPLY_SHA" >>"$replay"
   done <"$stage"
   rm -f "$stage"
-  awk -F '\034' 'BEGIN { OFS="\034" }
+  LC_ALL=C awk -F '\034' 'BEGIN { OFS="\034" }
     {
       id=$1; schema=$2; event=$3
       if (schema == "sitter.v1" && event == "expect") {
@@ -1067,7 +1063,7 @@ watch() {
       }
     }
     END { for (id in state) print order[id], id, state[id], path[id], bytes[id], sha[id] }' "$replay" |
-    sort -n | cut -d $'\034' -f2- >"${replay}.last"
+    LC_ALL=C sort -n | LC_ALL=C cut -d $'\034' -f2- >"${replay}.last"
   rm -f "$replay"
   while IFS=$'\034' read -r current_id current_state current_path baseline_bytes baseline_sha; do
     case $current_state in pending|nudged1|nudged2|awaiting_human) ;; *) continue ;; esac
@@ -1142,7 +1138,7 @@ sweep_locked() (
   rm -f "$stage"
   # Replay uses generations: expect starts one, ack absorbs all later nudges,
   # and quarantine permanently burns an id.
-  awk -F '\t' 'BEGIN { OFS="\034" }
+  LC_ALL=C awk -F '\t' 'BEGIN { OFS="\034" }
     {
       id=$1; event=$2; incoming=$3; schema=$4
       # Keep the exact live_expect_state reducer alongside the historical
@@ -1169,7 +1165,7 @@ sweep_locked() (
         order[id]=NR
       }
     }
-    END { for (id in state) print order[id], live[id], id, state[id], ts[id], to[id], text[id], sla[id] }' "$replay" | sort -n | cut -d $'\034' -f2- >"${replay}.last"
+    END { for (id in state) print order[id], live[id], id, state[id], ts[id], to[id], text[id], sla[id] }' "$replay" | LC_ALL=C sort -n | LC_ALL=C cut -d $'\034' -f2- >"${replay}.last"
   rm -f "$replay"; now=$(now_epoch)
   delta=$(mktemp "$SITTER_HOME/.sitter-delta.XXXXXX") || die 'cannot stage ledger delta'
   while IFS=$'\034' read -r current_live_state key current_state current_ts current_to current_text current_sla; do

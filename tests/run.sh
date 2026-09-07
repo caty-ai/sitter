@@ -2180,16 +2180,17 @@ ledger_replay_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
   load_sitter_functions
+  probe_reference_invalid_utf8
   local ledger="$CASE_DIR/generated.jsonl" line n=0 rc=0 saw_skip=0 saw_poison=0 saw_v0=0 saw_v1=0 saw_invalid=0
   bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$ledger"
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))
-    if [[ $line == *$'\xff'* ]]; then
+    if replay_has_invalid_byte "$line"; then
       [[ $saw_v1 -eq 1 ]]
       saw_invalid=1
       # An unexported caller locale must not affect the external-sed oracle
       # or the native matcher, including the matcher's first invocation.
-      ( unset REPLAY_MATCH_LOCALE; LC_ALL=C; assert_replay_equivalent "$line" caller-locale )
+      ( LC_ALL=C; assert_replay_equivalent "$line" caller-locale )
     fi
     assert_replay_equivalent "$line" "$n"
     rc=0; expect_replay_line "$line" || rc=$?
@@ -2213,6 +2214,7 @@ ledger_replay_equivalence() {
 ledger_sweep_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
+  probe_reference_invalid_utf8
   local input="$CASE_DIR/generated.jsonl" ref="$ROOT/tests/fixtures/sitter.baseline" which ledger
   bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$input"
   for which in ref new; do
@@ -2224,13 +2226,38 @@ ledger_sweep_equivalence() {
     SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$which" SPY_FILE="$CASE_DIR/$which.spy" \
       bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err"
     # Only the clock and process-derived event id are nondeterministic.
-    tail -n +2001 "$ledger" | sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
+    tail -n +2001 "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
   done
   cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
-  # BSD sed diagnoses invalid UTF-8; the native matcher rejects it silently.
+  [[ ! -s $CASE_DIR/new.err ]]
+  # BSD sed diagnoses its known invalid-UTF-8 poison path.
   sed '/[Ii]llegal byte sequence/d' "$CASE_DIR/ref.err" >"$CASE_DIR/ref.filtered.err"
   cmp "$CASE_DIR/ref.filtered.err" "$CASE_DIR/new.err"
-  cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
+  # Repeated invalid lines make BSD's oracle quarantine their digest key.
+  # Remove only that known divergence; all unrelated poison rows still compare.
+  if [[ $ORACLE_INVALID_RC == 2 ]]; then
+    local invalid_key
+    invalid_key=$(
+      load_sitter_functions
+      detect_hash_tool
+      while IFS= read -r line; do
+        if replay_has_invalid_byte "$line"; then
+          failcount_key "ledger:$ledger line:$line"
+          break
+        fi
+      done <"$input"
+    )
+    [[ -n $invalid_key ]]
+    [[ $(LC_ALL=C grep -c '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/ref.tail") -eq 1 ]]
+    LC_ALL=C grep '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/ref.tail" |
+      grep -q '"event":"quarantine".*"state":"quarantined"'
+    if LC_ALL=C grep -q '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/new.tail"; then return 1; fi
+    LC_ALL=C sed '/"expect_id":"'"$invalid_key"'"/d' "$CASE_DIR/ref.tail" >"$CASE_DIR/ref.other.tail"
+    mv "$CASE_DIR/ref.other.tail" "$CASE_DIR/ref.tail"
+    printf 'ledger_sweep_equivalence: known BSD-style invalid-line quarantine key %s asserted\n' "$invalid_key"
+  fi
+  assert_invalid_byte_nudge "$CASE_DIR/new.tail" worker 1
+  assert_sweep_tails_equivalent ledger_sweep_equivalence
   grep -q '"event":"nudge".*"expect_id":"due"' "$CASE_DIR/new.tail"
 }
 
@@ -2239,7 +2266,17 @@ ledger_sweep_equivalence() {
 ledger_sweep_control_byte_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
+  probe_reference_invalid_utf8
   local ref="$ROOT/tests/fixtures/sitter.baseline" mode which script rc ledger input before
+  # Watch stores reply_file in its awk/sort stream. A missing raw-byte path
+  # must remain pending without diagnostics (macOS cannot create this name).
+  local reply="$CASE_DIR/reply-"$'\xff' watch_ledger="$CASE_DIR/watch.jsonl"
+  printf '%s\n' '{"schema":"sitter.v1","expect_id":"watch-invalid-byte","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"","sla_s":0,"nudges":0,"reply_file":"'"$reply"'","reply_bytes":null,"reply_sha256":null}' >"$watch_ledger"
+  cp "$watch_ledger" "$CASE_DIR/watch.before"
+  SITTER_HOME="$CASE_DIR/watch-home" bash "$SITTER" watch --once --ledger "$watch_ledger" \
+    >"$CASE_DIR/watch.out" 2>"$CASE_DIR/watch.err"
+  [[ ! -s $CASE_DIR/watch.err && ! -s $CASE_DIR/watch.out ]]
+  cmp "$CASE_DIR/watch.before" "$watch_ledger"
   for mode in tab-refused field-separator invalid-utf8 invalid-utf8-first; do
     input="$CASE_DIR/$mode.input"
     printf '%s\n' '{"schema":"sitter.v0","expect_id":"control","ts":"2000-01-01T00:00:00.000Z","event":"expect","state":"pending","text":"'"$([[ $mode == field-separator ]] && printf 'left\034right' || printf text)"'","sla_s":0,"nudges":0}' >"$input"
@@ -2261,14 +2298,20 @@ ledger_sweep_control_byte_equivalence() {
       SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$mode-$which" SPY_FILE="$CASE_DIR/$mode-$which.spy" \
         bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err" || rc=$?
       printf '%s\n' "$rc" >"$CASE_DIR/$which.rc"
-      tail -n +"$((before + 1))" "$ledger" | sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
+      tail -n +"$((before + 1))" "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
       sed -E '/[Ii]llegal byte sequence/d; s@^.*: line [0-9]+:@SCRIPT: line N:@' "$CASE_DIR/$which.err" >"$CASE_DIR/$which.normalized.err"
     done
     cmp "$CASE_DIR/ref.rc" "$CASE_DIR/new.rc"
     cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
-    cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
+    if [[ $mode == invalid-utf8* ]]; then
+      [[ $(cat "$CASE_DIR/new.rc") == 0 && ! -s $CASE_DIR/new.err ]]
+      assert_invalid_byte_nudge "$CASE_DIR/new.tail" '' 0
+      assert_sweep_tails_equivalent "ledger_sweep_control_byte_equivalence $mode"
+    else
+      cmp "$CASE_DIR/ref.tail" "$CASE_DIR/new.tail"
+      [[ ! -s $CASE_DIR/new.tail ]]
+    fi
     cmp "$CASE_DIR/ref.normalized.err" "$CASE_DIR/new.normalized.err"
-    if [[ $mode != invalid-utf8* || $OSTYPE == darwin* ]]; then [[ ! -s $CASE_DIR/new.tail ]]; fi
   done
 }
 
