@@ -1,6 +1,13 @@
 # Design — ledger compaction / bounded growth (#74)
 
-Status: **draft v0 for upstream review** (L1-9; nothing here is implemented)
+Status: **REJECTED at upstream review r1 (2026-09-08, 3/3 NO-GO) — kept as a record, not a plan.**
+Owner decision: #74 re-scoped to ask-ledger separation; the offset-guard fix moved to #76.
+Blocking findings (see the #74 r1 result comment): D1 breaks `ask --already-sent`
+because `ask_generation_state` never resets on v0 rows (§1's "only the latest
+generation is observable" is false for C3); quarantine is not absorbing in C3/C6;
+a once-per-pass prefix hash leaves a mid-loop hole; exact tier underspecified for
+`run`/foreign rows; unlocked second writer and no-fsync are new loss modes.
+Original status line: draft v0 for upstream review (L1-9; nothing here is implemented)
 Lane/size: backend / **L** (persistence semantics, `component:ledger`); child of #71 (PR #73, v0.5.0)
 Baseline: `origin/main` bc3030d, `SITTER_VERSION=0.5.0`, oracle `tests/fixtures/sitter.baseline`
 
