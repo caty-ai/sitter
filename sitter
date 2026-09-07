@@ -97,6 +97,7 @@ truncate_utf8() {
     fi
     n=${#clipped}; i=0
     while ((i < n)); do
+      # truncate_utf8_fallback_matches_iconv asserts this literal assignment via its DEBUG-trap counter.
       ch=${clipped:i:1}
       lower=128; upper=191
       case $ch in
