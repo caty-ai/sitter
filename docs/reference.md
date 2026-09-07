@@ -81,7 +81,7 @@ to 140 bytes. An active id cannot be registered twice, and a quarantined id is
 permanently burned. `ack` is idempotent: it always appends an acknowledgement,
 including when the matching expectation arrives late or out of order.
 
-Since v0.5.0, ledger lines are replayed bytewise on every platform: bytes that are not valid UTF-8 no longer poison a line (previously platform-dependent); emitted text is still truncated to valid UTF-8 as before.
+Since v0.5.0, ledger lines are replayed bytewise on every platform: bytes that are not valid UTF-8 no longer poison a line (previously platform-dependent). Emitted text is truncated to its longest valid UTF-8 prefix whether or not `iconv` is available (since v0.5.2; before that the no-`iconv` fallback only trimmed an incomplete trailing sequence).
 
 `sweep --once` replays the ledger and exits; it does not run a daemon or
 schedule itself. Schedule that command externally. Each active expectation
