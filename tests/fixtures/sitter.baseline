@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Release version of this file. CI's tag job requires the pushed git tag to
 # equal "v$SITTER_VERSION", so bump this in the same commit as a release.
-SITTER_VERSION='0.5.0'
+SITTER_VERSION='0.4.0'
 
 usage() {
   cat <<'EOF'
@@ -184,16 +184,8 @@ append_locked() {
 }
 
 copy_ledger_locked() {
-  local destination=$1 size_file=${2:-} copy_rc=0
-  if [[ -n $size_file ]]; then
-    # Measure the staged bytes while still holding the copy lock, never the
-    # live file (which may grow as soon as the lock is released).
-    # shellcheck disable=SC2016 # positional arguments belong to the locked child
-    with_ledger_lock sh -c 'cp "$1" "$2" && wc -c <"$2" >"$3"' sh \
-      "$LEDGER" "$destination" "$size_file" || copy_rc=$?
-  else
-    with_ledger_lock cp "$LEDGER" "$destination" || copy_rc=$?
-  fi
+  local destination=$1 copy_rc=0
+  with_ledger_lock cp "$LEDGER" "$destination" || copy_rc=$?
   return "$copy_rc"
 }
 
@@ -398,9 +390,6 @@ timestamp_epoch() {
 
 expect_replay_line() {
   local line=$1 id ts state event to text_value sla nudges schema reply_file reply_bytes reply_sha reply_sha_field
-  local field name pattern remaining part value
-  # Replay treats invalid UTF-8 as ordinary bytes on every platform.
-  local LC_ALL=C
   if [[ $line == *'"schema":"sitter.v0"'* && $line == *'"expect_id":'* ]]; then
     schema=sitter.v0
   elif [[ $line == *'"schema":"sitter.v1"'* ]]; then
@@ -408,64 +397,42 @@ expect_replay_line() {
   else
     return 0
   fi
-  # Match the last complete occurrence, just as sed's leading .* did. Quotes
-  # still terminate strings even when escaped; this is deliberately not JSON decoding.
-  for field in id ts event state to text_value sla nudges reply_file reply_bytes reply_sha_field; do
-    case $field in
-      reply_*) [[ $schema == sitter.v1 ]] || continue ;;
-    esac
-    case $field in
-      id) name=expect_id ;;
-      text_value) name=text ;;
-      sla) name=sla_s ;;
-      reply_sha_field) name=reply_sha256 ;;
-      *) name=$field ;;
-    esac
-    case $field in
-      sla|nudges)
-        if [[ $schema == sitter.v0 ]]; then pattern='([0-9][0-9]*)'; else pattern='([^,}]*)'; fi ;;
-      reply_bytes|reply_sha_field) pattern='([^,}]*)' ;;
-      *) pattern='"([^"]*)"' ;;
-    esac
-    pattern='.*"'"$name"'":'"$pattern"'.*'
-    value=''
-    if [[ $line != *$'\n'* ]]; then
-      if [[ $line =~ $pattern ]]; then value=${BASH_REMATCH[1]}; fi
-    else
-      # Callable callers can pass multiple physical lines. Preserve sed's
-      # per-line output and command substitution's trailing-newline removal.
-      remaining=$line
-      while :; do
-        part=${remaining%%$'\n'*}
-        if [[ $part =~ $pattern ]]; then value+=${BASH_REMATCH[1]}$'\n'; fi
-        [[ $remaining == *$'\n'* ]] || break
-        remaining=${remaining#*$'\n'}
-      done
-      while [[ $value == *$'\n' ]]; do value=${value%$'\n'}; done
-    fi
-    printf -v "$field" '%s' "$value"
-  done
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"expect_id":"\([^"]*\)".*/\1/p')
   [[ -n $id ]] || return 2
   if ! valid_expect_id "$id"; then
     [[ $schema == sitter.v1 ]] && return 2
     return 0
   fi
+  ts=$(printf '%s\n' "$line" | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')
+  event=$(printf '%s\n' "$line" | sed -n 's/.*"event":"\([^"]*\)".*/\1/p')
+  state=$(printf '%s\n' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
   [[ -n $ts && -n $state && -n $event ]] || return 2
   if [[ $schema == sitter.v0 ]]; then
     case $state in pending|nudged1|nudged2|awaiting_human|acked|quarantined) ;; *) return 2 ;; esac
   else
     case $state in pending|acked|prepared|send_failed) ;; *) return 2 ;; esac
   fi
+  to=$(printf '%s\n' "$line" | sed -n 's/.*"to":"\([^"]*\)".*/\1/p')
+  text_value=$(printf '%s\n' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+  if [[ $schema == sitter.v1 ]]; then
+    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([^,}]*\).*/\1/p')
+    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([^,}]*\).*/\1/p')
+  else
+    sla=$(printf '%s\n' "$line" | sed -n 's/.*"sla_s":\([0-9][0-9]*\).*/\1/p')
+    nudges=$(printf '%s\n' "$line" | sed -n 's/.*"nudges":\([0-9][0-9]*\).*/\1/p')
+  fi
   is_uint "$sla" && is_uint "$nudges" || return 2
-  reply_sha=null
-  if [[ $schema == sitter.v0 ]]; then reply_file='' reply_bytes=null; fi
+  reply_file='' reply_bytes=null reply_sha=null
   if [[ $schema == sitter.v1 ]]; then
     case "$event:$state" in
       ask_prepare:prepared|expect:pending|ask_send_failed:send_failed|refused:acked) ;;
       *) return 2 ;;
     esac
+    reply_file=$(printf '%s\n' "$line" | sed -n 's/.*"reply_file":"\([^"]*\)".*/\1/p')
     [[ -n $reply_file ]] && valid_reply_path "$reply_file" || return 2
+    reply_bytes=$(printf '%s\n' "$line" | sed -n 's/.*"reply_bytes":\([^,}]*\).*/\1/p')
     [[ $reply_bytes == null ]] || is_uint "$reply_bytes" || return 2
+    reply_sha_field=$(printf '%s\n' "$line" | sed -n 's/.*"reply_sha256":\([^,}]*\).*/\1/p')
     if [[ $reply_sha_field == null ]]; then
       reply_sha=null
     else
@@ -637,7 +604,7 @@ ack() {
 valid_reply_path() {
   local value=$1 ch i
   [[ $value == /* && $value != *'"'* && $value != *\\* ]] || return 1
-  local LC_ALL=C
+  LC_ALL=C
   for ((i = 0; i < ${#value}; i++)); do
     ch=${value:i:1}
     case $ch in [$'\x01'-$'\x1f'] | $'\x7f') return 1 ;; esac
@@ -1051,7 +1018,7 @@ watch() {
       "$REPLAY_STATE" "$REPLAY_REPLY_FILE" "$REPLAY_REPLY_BYTES" "$REPLAY_REPLY_SHA" >>"$replay"
   done <"$stage"
   rm -f "$stage"
-  LC_ALL=C awk -F '\034' 'BEGIN { OFS="\034" }
+  awk -F '\034' 'BEGIN { OFS="\034" }
     {
       id=$1; schema=$2; event=$3
       if (schema == "sitter.v1" && event == "expect") {
@@ -1063,7 +1030,7 @@ watch() {
       }
     }
     END { for (id in state) print order[id], id, state[id], path[id], bytes[id], sha[id] }' "$replay" |
-    LC_ALL=C sort -n | LC_ALL=C cut -d $'\034' -f2- >"${replay}.last"
+    sort -n | cut -d $'\034' -f2- >"${replay}.last"
   rm -f "$replay"
   while IFS=$'\034' read -r current_id current_state current_path baseline_bytes baseline_sha; do
     case $current_state in pending|nudged1|nudged2|awaiting_human) ;; *) continue ;; esac
@@ -1097,27 +1064,14 @@ watch() {
   return "$final_rc"
 }
 
-sweep_locked() (
+sweep_locked() {
   local stage replay line rc key epoch now next_state event reason current_nudges hook_code
-  local stage_bytes live_bytes delta current_live_state live_event delta_rc=0
-  stage='' replay='' delta=''
-  # A subshell scopes cleanup to this pass without replacing caller traps.
-  trap 'rm -f -- "$stage" "${stage:+${stage}.bytes}" "$replay" "${replay:+${replay}.last}" "$delta"' EXIT
   if [[ -n ${SWEEP_LOCKDIR:-} ]]; then touch -c -- "$SWEEP_LOCKDIR" 2>/dev/null || true; fi
   [[ -e $KILL_FILE || -L $KILL_FILE ]] && return 0
   [[ ! -L $LEDGER ]] || die 'ledger must not be a symlink'
   : >>"$LEDGER"; chmod 600 "$LEDGER"
   stage=$(mktemp "$SITTER_HOME/.sitter-sweep.XXXXXX") || die 'cannot stage ledger'
-  if ! copy_ledger_locked "$stage" "${stage}.bytes"; then
-    rm -f "$stage" "${stage}.bytes"; return 1
-  fi
-  read -r stage_bytes <"${stage}.bytes"
-  rm -f "${stage}.bytes"
-  chmod 600 "$stage"
-  [[ -s $stage ]] || return 0
-  # An append can finish an unterminated staged row. In that uncommon case
-  # search from the beginning so its id cannot hide before the byte boundary.
-  if [[ -s $stage && -n $(tail -c 1 "$stage") ]]; then stage_bytes=0; fi
+  copy_ledger_locked "$stage"; chmod 600 "$stage"
   replay=$(mktemp "$SITTER_HOME/.sitter-replay.XXXXXX") || die 'cannot stage replay'
   while IFS= read -r line || [[ -n $line ]]; do
     if expect_replay_line "$line"; then rc=0; else rc=$?; fi
@@ -1125,39 +1079,17 @@ sweep_locked() (
       record_poison "$line"; continue
     fi
     [[ $rc -eq 1 ]] || continue
-    # The live reducer needs delimiter-safe fields; raw text/to/event can
-    # contain tabs. Preserve the original sweep columns after this prefix.
-    case $REPLAY_EVENT in
-      expect|ask_prepare|ask_send_failed|refused|ack|nudge|awaiting_human|quarantine) live_event=$REPLAY_EVENT ;;
-      *) live_event=unknown ;;
-    esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$REPLAY_ID" "$live_event" "$REPLAY_STATE" "$REPLAY_SCHEMA" \
-      "$REPLAY_ID" "$REPLAY_EVENT" "$REPLAY_STATE" "$REPLAY_TS" "$REPLAY_TO" "$REPLAY_TEXT" "$REPLAY_SLA" "$REPLAY_SCHEMA" >>"$replay"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$REPLAY_ID" "$REPLAY_EVENT" "$REPLAY_STATE" "$REPLAY_TS" "$REPLAY_TO" "$REPLAY_TEXT" "$REPLAY_SLA" "$REPLAY_SCHEMA" >>"$replay"
   done <"$stage"
   rm -f "$stage"
   # Replay uses generations: expect starts one, ack absorbs all later nudges,
   # and quarantine permanently burns an id.
-  LC_ALL=C awk -F '\t' 'BEGIN { OFS="\034" }
+  awk -F '\t' 'BEGIN { OFS="\034" }
     {
-      id=$1; event=$2; incoming=$3; schema=$4
-      # Keep the exact live_expect_state reducer alongside the historical
-      # sweep reducer: prepared/send_failed/refused differ between the two.
-      if (live[id] != "quarantined") {
-        active=(live[id] == "pending" || live[id] == "nudged1" || live[id] == "nudged2" || live[id] == "awaiting_human")
-        if (event == "expect") live[id]="pending"
-        else if (event == "ask_prepare" && schema == "sitter.v1") live[id]="prepared"
-        else if (event == "ask_send_failed" && schema == "sitter.v1" && live[id] == "prepared") live[id]="send_failed"
-        else if (event == "refused" && (schema == "sitter.v1" || live[id] == "" || live[id] == "acked")) live[id]="acked"
-        else if (schema == "sitter.v0" && active) {
-          if (event == "ack") live[id]="acked"
-          else if (event == "nudge" || event == "awaiting_human" || event == "quarantine") live[id]=incoming
-        }
-      }
-      id=$5; event=$6; incoming=$7; schema=$12
+      id=$1; event=$2; incoming=$3; schema=$8
       if (state[id] == "quarantined") next
       if (event == "expect") {
-        state[id]="pending"; ts[id]=$8; to[id]=$9; text[id]=$10; sla[id]=$11; order[id]=NR
+        state[id]="pending"; ts[id]=$4; to[id]=$5; text[id]=$6; sla[id]=$7; order[id]=NR
       } else if (schema == "sitter.v0" && state[id] != "") {
         if (event == "ack") state[id]="acked"
         else if (event != "refused" && state[id] != "acked") state[id]=incoming
@@ -1165,41 +1097,22 @@ sweep_locked() (
         order[id]=NR
       }
     }
-    END { for (id in state) print order[id], live[id], id, state[id], ts[id], to[id], text[id], sla[id] }' "$replay" | LC_ALL=C sort -n | LC_ALL=C cut -d $'\034' -f2- >"${replay}.last"
+    END { for (id in state) print order[id], id, state[id], ts[id], to[id], text[id], sla[id] }' "$replay" | sort -n | cut -d $'\034' -f2- >"${replay}.last"
   rm -f "$replay"; now=$(now_epoch)
-  delta=$(mktemp "$SITTER_HOME/.sitter-delta.XXXXXX") || die 'cannot stage ledger delta'
-  while IFS=$'\034' read -r current_live_state key current_state current_ts current_to current_text current_sla; do
+  while IFS=$'\034' read -r key current_state current_ts current_to current_text current_sla; do
     if [[ -n ${SWEEP_LOCKDIR:-} ]]; then touch -c -- "$SWEEP_LOCKDIR" 2>/dev/null || true; fi
     case $current_state in pending) next_state=nudged1; event=nudge; reason=sla_breach; current_nudges=1 ;; nudged1) next_state=nudged2; event=nudge; reason=sla_breach; current_nudges=2 ;; nudged2) next_state=awaiting_human; event=awaiting_human; reason=awaiting_human; current_nudges=2 ;; *) continue ;; esac
     epoch=$(timestamp_epoch "$current_ts") || continue
     ((now - epoch >= current_sla)) || continue
-    # Recheck only bytes appended since the locked snapshot. A raw substring
-    # check is conservative even for duplicate keys and poisoned records; any
-    # possible match uses the original full replay for this candidate.
-    rc=0
-    if ((stage_bytes > 0)); then
-      if ! tail -c "+$((stage_bytes + 1))" "$LEDGER" >"$delta"; then
-        delta_rc=1; break
-      fi
-      # A shorter replacement invalidates the offset. Measure after tail so
-      # replacement between the read and this check also forces full replay.
-      if ! live_bytes=$(wc -c <"$LEDGER"); then delta_rc=1; break; fi
-      if ((live_bytes >= stage_bytes)); then
-        if grep -Fq -- '"expect_id":"'"$key"'"' "$delta"; then rc=0; else rc=$?; fi
-      fi
-    fi
-    # Only a definite no-match can trust the staged state.
-    if ((rc != 1)); then current_live_state=$(live_expect_state "$key"); fi
-    [[ $current_live_state == "$current_state" ]] || continue
+    [[ $(live_expect_state "$key") == "$current_state" ]] || continue
     # Append first under the sweep lock.  A crash before this hook can lose a
     # call, but replay makes a duplicate state transition impossible.
     emit_expect_event "$event" "$next_state" "$key" "$current_to" "$current_text" "$current_sla" "$current_nudges" ''
     hook_code=$(hook_for_expect "$event" "$reason" "$LAST_EVENT_ID" "$key" "$current_text")
     if [[ $hook_code != 0 ]]; then record_hook_failure "$key"; fi
   done <"${replay}.last"
-  rm -f "${replay}.last" "$delta"
-  return "$delta_rc"
-)
+  rm -f "${replay}.last"
+}
 
 sweep() {
   [[ -n $LEDGER && -n $ON_FAIL && $SWEEP_ONCE == true ]] || die '--once, --ledger, and --on-fail are required'
