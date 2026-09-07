@@ -2215,18 +2215,26 @@ ledger_sweep_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
   probe_reference_invalid_utf8
-  local input="$CASE_DIR/generated.jsonl" ref="$ROOT/tests/fixtures/sitter.baseline" which ledger
+  local input="$CASE_DIR/generated.jsonl" which ledger before
   bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$input"
+  probe_reference_invalid_utf8 "$input"
   for which in ref new; do
     ledger="$CASE_DIR/replay.jsonl"
     cp "$input" "$ledger"
     local script=$SITTER
-    [[ $which != ref ]] || script=$ref
+    if [[ $which == ref ]]; then
+      prepare_reference_sweep "$input" "$ledger"
+      script=$REFERENCE_SCRIPT
+    fi
+    before=$(wc -l <"$ledger")
     # Both run under bash: the non-executable oracle cannot lockf-reexec itself.
     SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$which" SPY_FILE="$CASE_DIR/$which.spy" \
       bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err"
     # Only the clock and process-derived event id are nondeterministic.
-    tail -n +2001 "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
+    tail -n +"$((before + 1))" "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
+    if [[ $which == ref && $ORACLE_INVALID_RC == 0 ]]; then
+      assert_reference_skip_state "$input" "$ledger" "$CASE_DIR/home-ref" "$script"
+    fi
   done
   cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
   [[ ! -s $CASE_DIR/new.err ]]
@@ -2251,7 +2259,9 @@ ledger_sweep_equivalence() {
     [[ $(LC_ALL=C grep -c '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/ref.tail") -eq 1 ]]
     LC_ALL=C grep '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/ref.tail" |
       grep -q '"event":"quarantine".*"state":"quarantined"'
-    if LC_ALL=C grep -q '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/new.tail"; then return 1; fi
+    if LC_ALL=C grep -q '"expect_id":"'"$invalid_key"'"' "$CASE_DIR/new.tail"; then
+      printf '%s\n' 'new sweep unexpectedly quarantined invalid-byte record' >&2; return 1
+    fi
     LC_ALL=C sed '/"expect_id":"'"$invalid_key"'"/d' "$CASE_DIR/ref.tail" >"$CASE_DIR/ref.other.tail"
     mv "$CASE_DIR/ref.other.tail" "$CASE_DIR/ref.tail"
     printf 'ledger_sweep_equivalence: known BSD-style invalid-line quarantine key %s asserted\n' "$invalid_key"
@@ -2267,7 +2277,7 @@ ledger_sweep_control_byte_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
   probe_reference_invalid_utf8
-  local ref="$ROOT/tests/fixtures/sitter.baseline" mode which script rc ledger input before
+  local mode which script rc ledger input before
   # Watch stores reply_file in its awk/sort stream. A missing raw-byte path
   # must remain pending without diagnostics (macOS cannot create this name).
   local reply="$CASE_DIR/reply-"$'\xff' watch_ledger="$CASE_DIR/watch.jsonl"
@@ -2289,17 +2299,25 @@ ledger_sweep_control_byte_equivalence() {
       if [[ $mode == invalid-utf8 ]]; then printf '%s\n' "$primer" "$invalid" >"$input"
       else printf '%s\n' "$invalid" "$primer" >"$input"; fi
     fi
-    before=$(wc -l <"$input")
+    if [[ $mode == invalid-utf8* ]]; then probe_reference_invalid_utf8 "$input"; fi
     for which in ref new; do
       ledger="$CASE_DIR/$mode-$which.jsonl"
       cp "$input" "$ledger"
-      script=$SITTER; [[ $which != ref ]] || script=$ref
+      script=$SITTER
+      if [[ $which == ref ]]; then
+        prepare_reference_sweep "$input" "$ledger"
+        script=$REFERENCE_SCRIPT
+      fi
+      before=$(wc -l <"$ledger")
       rc=0
       SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$mode-$which" SPY_FILE="$CASE_DIR/$mode-$which.spy" \
         bash "$script" sweep --once --ledger "$ledger" --on-fail "$SPY" >"$CASE_DIR/$which.out" 2>"$CASE_DIR/$which.err" || rc=$?
       printf '%s\n' "$rc" >"$CASE_DIR/$which.rc"
       tail -n +"$((before + 1))" "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$which.tail"
       sed -E '/[Ii]llegal byte sequence/d; s@^.*: line [0-9]+:@SCRIPT: line N:@' "$CASE_DIR/$which.err" >"$CASE_DIR/$which.normalized.err"
+      if [[ $which == ref && $mode == invalid-utf8* && $ORACLE_INVALID_RC == 0 ]]; then
+        assert_reference_skip_state "$input" "$ledger" "$CASE_DIR/home-$mode-ref" "$script"
+      fi
     done
     cmp "$CASE_DIR/ref.rc" "$CASE_DIR/new.rc"
     cmp "$CASE_DIR/ref.out" "$CASE_DIR/new.out"
