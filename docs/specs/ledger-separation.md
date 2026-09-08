@@ -1,0 +1,237 @@
+# Spec — a dedicated ledger for the reply deadman, and the run-ledger rotation contract (#74)
+
+Status: **adopted 2026-09-08** (owner decision after the upstream review r1 of the
+compaction draft; that draft is kept on branch `design/74-compaction` as a
+rejected record and is not a plan). Lane: docs + bench, size **M**, `component:ledger`.
+Shipped as **v0.5.5** (a norm operators follow; no `sitter` behaviour change).
+Origin: #71 (linear replay, v0.5.0) → #74 (this document) → #76 (prefix-identity
+guard, v0.5.4).
+
+This page records three things: the measured problem, why compaction was
+rejected on evidence, and the two contracts that replace it — *run the
+expect family against its own ledger* and *rotate run ledgers by rename*.
+The normative sentences are repeated in [reference.md](../reference.md)
+(“Ledger placement and rotation”); this page carries the reasoning.
+
+## 0. The measured problem
+
+After #71 each `sweep --once` / `watch --once` pass is linear in ledger
+size, but the ledger only grows. The synthetic history
+(`tests/bench-ledger.sh`, default mode: three reused ids, mixed v0/v1,
+poison and `run` rows; macOS arm64, v0.5.0, single observations):
+
+| lines | sweep | watch |
+| ---: | ---: | ---: |
+| 1,000 | 3.4 s | 0.3 s |
+| 10,000 | 21.7 s | 2.5 s |
+| 50,000 | 96.5 s | 12.3 s |
+
+What the maintainer's production ledger actually contains (measured
+2026-09-08, `~/.claude/state/mission-control/runs.jsonl`, the file that a
+launchd job hands to `sweep --once` every 300 s):
+
+| fact | value |
+| --- | ---: |
+| rows / bytes | 13,884 / 8.0 MB |
+| rows carrying `"expect_id"` (the expect family: `expect` / `ack` / `nudge` / `awaiting_human`) | **6** |
+| `"schema":"sitter.v0"` rows without `expect_id` (`run` family: `start` / `heartbeat` / `end`) | 8,671 |
+| rows with no sitter schema at all (mission-control `mc-log`, appended without the ledger lock) | 5,213 |
+
+So 99.96 % of the bytes that every sweep copies to its private stage and
+pushes through the replay loop belong to rows the replay filter discards on
+sight (`expect_replay_line` returns without parsing unless a line carries
+`"schema":"sitter.v1"`, or `"schema":"sitter.v0"` together with
+`"expect_id":`). The reply deadman is paying for the run supervisor's
+history and for a foreign writer's history.
+
+## 1. Why compaction was rejected (r1, 2026-09-08, 3/3 NO-GO)
+
+The compaction draft proposed an in-place reducer that keeps only the rows
+each consumer still needs. Three blind, read-only seats (Kimi K3, Gemini
+3.8 Flash, Codex) rejected it on reproduced evidence; the full record is in
+the #74 r1 result comment. The findings that matter for this document:
+
+- **Retention cannot be derived from a shared “generation” notion.**
+  `ask --already-sent` observes v0 rows that a v1 generation is supposed to
+  supersede (`ask_generation_state` resets only on v1 rows), so dropping the
+  “superseded” generation turns a refused adoption (exit 2) into a fresh one
+  (exit 0) and loses the pre-adoption reply protection. Quarantine is not
+  absorbing in every reducer either (a later v1 `expect` resets it).
+  Every safe design therefore has to prove replay equivalence per consumer,
+  per row shape, forever.
+- **An expect-only reducer would shrink the production file by ≈ 0.05 %.**
+  Bounded growth in production means a retention policy for `run` rows and
+  for a foreign writer's rows — neither of which sitter reads.
+- **Replacing a live ledger in place is a new loss surface**, not an
+  inherited one: a writer that does not take the lock, no fsync on the
+  replacement, and a staged-offset guard that has to be re-armed at a
+  lock-coupled boundary (that last point was fixed generically in #76 /
+  v0.5.4, independent of compaction).
+
+All three seats answered the frame question (“is compaction the wrong
+tool?”) the same way: **separate, don't compact.** Every verb already takes
+`--ledger`; nothing in sitter requires the expect family and the run family
+to share a file. The zero-deletion fix is to stop sharing.
+
+## 2. Contract A — the expect family gets its own ledger
+
+Terms: the **expect family** is `expect`, `ack`, `ask`, `watch`, `sweep`
+(everything keyed by `expect_id`). The **run family** is `sitter run`
+(`start` / `heartbeat` / `end` and their `fail` / `stall` / `restart` rows).
+
+**A1 — Recommendation.** Run the expect family against a ledger to which
+no `run` invocation and no foreign writer appends. Give `sitter-ask`-style
+wrappers, `watch --once` and the scheduled `sweep --once` the same
+dedicated `--ledger`; give `sitter run` a different one.
+
+**A2 — Sharing stays in contract.** A ledger that mixes both families
+replays exactly as before; nothing in this release changes the format, the
+append-only contract (v0.5.4), the replay semantics, the lock (`<ledger>.lock`)
+or the side state under `$SITTER_HOME`. What A1 changes is the cost model:
+each sweep or watch pass copies the whole file to its private stage under
+the ledger lock and replays every line, so **the per-pass cost of the
+expect family is proportional to the whole file, not to the live asks**.
+With a dedicated ledger it is proportional to the ask history alone, which
+grows by a handful of rows per ask.
+
+**A3 — Why foreign writers matter twice.** A writer that appends without
+the ledger lock is outside sitter's contract (`docs/adr/0002`). On a shared
+expect ledger its rows are pure replay cost, and any row of its that happens
+to carry sitter's markers unescaped (`"schema":"sitter.v1"`, or
+`"schema":"sitter.v0"` with `"expect_id":`) is parsed as sitter's own — a
+malformed one is a poison line, counted per ledger and quarantined after
+three failures. A foreign writer is also the party most likely to truncate
+or rotate the file it owns, which on a ledger that carries expect rows is
+the B4 hazard below. On a dedicated expect ledger none of this can happen;
+on a run ledger the foreign rows are harmless to sitter — nothing replays
+them — but they can still break the file for its other consumers.
+
+**A4 — Moving the live asks (one-time placement).** Do it while no sweep or
+watch can run (drop the kill file, or unload the scheduler), then:
+
+1. `grep '"expect_id"' old.jsonl >> new.jsonl` — **copy, never move or edit
+   in place**. This carries every expect-family row (v0 rows have
+   `"schema":"sitter.v0"` + `expect_id`; v1 `ask_*` / `refused` rows also
+   carry `expect_id`) in original order, which is all the replay needs:
+   active generations, acknowledgements and quarantine tombstones replay
+   identically from the copy.
+2. Point every expect-family invocation at `new.jsonl`.
+3. Only then remove the kill file / reload the scheduler.
+
+The old rows stay in the old file and are inert once nothing sweeps it. Do
+not truncate or rewrite the old file: it is still the run ledger, and it
+stays append-only. Note that failure counters and quarantine keys under
+`$SITTER_HOME` include the ledger path (`ledger:<path> …`): a poison line's
+count restarts at zero on the new path, while an id that was quarantined
+stays burned because its `quarantine` row was copied and is replayed.
+
+**A5 — One `$SITTER_HOME` per expect ledger.** The sweep lock is
+`$SITTER_HOME/sweep.lock`, so sweeps of two different ledgers under one home
+serialise with each other. Harmless, but if the old shared file is still
+swept for any reason, give it a different home or stop sweeping it.
+
+## 3. Contract B — run ledgers are rotated by rename
+
+Facts this contract rests on (all in `sitter`, unchanged by this release):
+
+- `sitter run` appends every event by **reopening the ledger path** under
+  `<ledger>.lock` (`append_locked`: write the row to a private temp file, then
+  `cat temp >> ledger` under the lock). It creates the file if it is missing
+  and never keeps a descriptor open between appends.
+- `sitter run` **reads nothing back** from the ledger. Neither does any
+  other verb read run-family rows: the replay filter skips every line that
+  lacks `"schema":"sitter.v1"` or `"schema":"sitter.v0"` + `"expect_id":`.
+- The lock lives beside the ledger (`<ledger>.lock`; on the mkdir tier also
+  `<ledger>.lock.d`), not inside it.
+
+**B1 — Rotation is rename + fresh file.** The owner of a run ledger (the
+supervisor that chose the path — in the maintainer's deployment,
+mission-control) rotates it by renaming the file to an archive name. The
+next append from any live `sitter run` recreates the path (mode 0600, umask
+077). Do not truncate, copy-then-truncate, or rewrite the file in place —
+in-place replacement is out of contract for every ledger (v0.5.4).
+
+**B2 — Take the ledger lock for the rename.** Renaming is safe against
+sitter's own appends even without the lock (each row is one `>>` write into
+whichever file the path names at that instant), but holding `<ledger>.lock`
+with the same primitive sitter uses on that host (`flock` where available,
+`lockf -k` on macOS) makes the rotation a clean boundary: every row appended
+before the rename is in the archive, every row after is in the fresh file,
+and a foreign writer that also takes the lock cannot straddle it.
+
+**B3 — Leave the lock alone.** `<ledger>.lock` is not part of the rotation.
+Do not rename or delete it, and never remove a `<ledger>.lock.d` directory —
+that is an in-progress append on the mkdir tier.
+
+**B4 — Never rotate an expect ledger.** The expect family replays its whole
+history: a rotated (shorter) file is seen by the v0.5.4 guard as a
+replacement and replayed from scratch, so every active expectation,
+prepared ask and quarantine tombstone simply disappears — no nudge, no
+`awaiting_human`, no error. This is precisely why Contract A exists: the
+run ledger becomes rotatable **because** it holds nothing sitter replays.
+A shared ledger (A2) must not be rotated.
+
+**B5 — Archives belong to the owner.** sitter never reads a rotated file;
+retention, compression and deletion of archives are the owner's policy and
+are not sitter's concern. Heartbeat files, `--log` files and kill files are
+unaffected by rotation.
+
+## 4. Operator wiring (acceptance check; outside this repository)
+
+Tracked as separate issues in the operator repositories; this lane links
+them rather than doing them, so that the docs and bench here can be reviewed
+on their own:
+
+- `~/.claude/scripts/sitter-ask` and `sitter-ask-watch`: read the ledger
+  path from a dedicated variable (e.g. `SITTER_ASK_LEDGER`) instead of
+  `MC_LEDGER`, default `~/.claude/state/sitter/asks.jsonl`.
+- launchd `ai.caty.sitter.sweep` (`sweep --once --ledger …`) and
+  `ai.caty.sitter.askwatch` (runs `sitter-ask-watch`): point at the same
+  dedicated ledger; one-time placement per A4.
+- mission-control `server/agents.js`: tail both files (run ledger for runs,
+  ask ledger for asks); rotation of `runs.jsonl` per Contract B is
+  mission-control's issue.
+
+Acceptance (the #74 Done-when item this lane cannot close by itself): the
+sweep launchd log shows the new ledger path, and `watch --once` acks a test
+ask on it.
+
+## 5. Bench — what separation buys, measured
+
+`tests/bench-ledger.sh --production-shape` (added in this lane) generates a
+ledger with the production shape of §0 — `tests/fixtures/gen-ledger.sh
+--production-shape 13884`: 13,878 run-family and foreign rows in the
+production 5:3 ratio, then the same six expect-family rows the default
+fixture ends with (one due, one acked, one quarantined) — and a six-row
+ledger holding only those six rows. Each shape × verb is timed on a fresh
+copy with a private `$SITTER_HOME`, three repetitions, median reported.
+
+Results (macOS arm64, Apple Silicon, `sitter` 0.5.5, 2026-09-08,
+`--repeat 3`, wall seconds, median of three; per-run values in the PR body):
+
+| ledger | rows | bytes | `sweep --once` median | `watch --once` median |
+| --- | ---: | ---: | ---: | ---: |
+| shared, production shape | 13,884 | 8,691,181 | 2.627 | 1.412 |
+| dedicated ask ledger | 6 | 1,128 | 1.212 | 0.076 |
+
+The six expect rows are byte-identical in both ledgers; the difference is
+entirely the 13,878 rows the replay filter discards: about 1.4 s per pass
+for either verb on this machine. `sweep` keeps a fixed cost of about 1.2 s
+on the six-row ledger (one due candidate: the live-tail recheck, the nudge
+append and the hook round trip), which is why its relative gain is smaller
+than `watch`'s. On the maintainer's 300-second sweep schedule the shared
+shape spends roughly 0.5 % of wall time replaying discarded rows — the
+motivation is not that number but that it grows without bound with the run
+supervisor's history, while the dedicated ledger's cost grows only with
+asks.
+
+## 6. Non-goals
+
+- No `sitter compact` verb, no deletion or rewriting of ledger rows by
+  sitter, now or as a follow-up of this lane (reopen only as a new issue,
+  with the `ask --already-sent` reducer fixed first and a production shape
+  that still needs it after separation).
+- No change to `sitter`'s behaviour, format or flags. The version moves to
+  0.5.5 because the docs now carry a norm operators are expected to follow,
+  which is ship-equivalent under the handbook's release rule.
+- No wiring changes in this repository (§4 lives in the operator repos).

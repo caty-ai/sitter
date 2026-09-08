@@ -10,6 +10,7 @@ behind each design decision live in [requirements-v0.md](requirements-v0.md)
 - [Reply tracking in detail](#reply-tracking-in-detail)
 - [Ask / watch contract in detail](#ask--watch-contract-in-detail)
 - [Sweep operational detail](#sweep-operational-detail)
+- [Ledger placement and rotation](#ledger-placement-and-rotation)
 - [Hook reasons and payload](#hook-reasons-and-payload)
 - [Git Bash / MSYS2 background](#git-bash--msys2-background)
 
@@ -156,6 +157,40 @@ live ledger match its private stage before trusting the staged replay, falling
 back to a full replay for affected candidates if the ledger was replaced or
 truncated. Before v0.5.4, an equal-or-longer replacement could produce a spurious
 nudge.
+
+## Ledger placement and rotation
+
+Since v0.5.5 the recommended layout is **one ledger per family**. The
+*expect family* — `expect`, `ack`, `ask`, `watch`, `sweep`, everything keyed
+by `expect_id` — should run against a ledger that no `run` invocation and no
+foreign writer appends to. Every verb takes `--ledger`; nothing in sitter
+requires the families to share a path. Sharing a ledger is still supported and
+replays exactly as before, but its cost is proportional to the *whole* file:
+each sweep or watch pass copies the entire ledger to its private stage under
+the ledger lock and replays every line, and lines from the run family and
+from foreign writers are discarded only after they have been staged and read.
+On the maintainer's production ledger that meant 13,884 rows replayed for
+6 expect-family rows on every 5-minute sweep. With a dedicated ledger the
+cost grows with the ask history alone. The reasoning, the measured numbers,
+and the one-time procedure for moving live asks to a new ledger (copy the
+`"expect_id"` rows in order while no sweep can run; never move or edit the
+old file in place) are in
+[docs/specs/ledger-separation.md](specs/ledger-separation.md).
+
+A ledger that holds only run-family rows may be **rotated by its owner**:
+rotation is *rename + fresh file*. `sitter run` appends each event by
+reopening the ledger path under `<ledger>.lock` and creates the file if it
+is missing, so the next append after a rename lands in a fresh file at the
+same path; it never reads the ledger back, and no verb replays run-family
+rows. Hold `<ledger>.lock` for the rename (with `flock`, or `lockf -k` on
+macOS) so the rotation is a clean boundary; leave the lock file and any
+`<ledger>.lock.d` directory alone. **Never rotate a ledger that carries
+expect-family rows**: the expect family replays its whole history, a
+shortened file is treated as a replacement and replayed from scratch, and
+every active expectation, prepared ask and quarantine tombstone silently
+disappears. In-place replacement (truncate, rewrite, restore over) stays out
+of contract for every ledger. Rotated files are the owner's to keep or
+delete; sitter never reads them.
 
 ## Hook reasons and payload
 
