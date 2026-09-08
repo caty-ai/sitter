@@ -198,8 +198,9 @@ unknown state that blocks both the rotation and the rescue** until the
 record is restored; after a rotation the record is reset to `0`); a
 larger count than the recorded one means something still writes asks
 there — the excess rows are stranded asks: append the ones not already
-present in the ask ledger (by `event_id`) to it under *that* ledger's lock,
-then record the row count of the snapshot the rows were taken from (never a
+present in the ask ledger (by `event_id`) to it under *that* ledger's lock —
+refusing, inside the same lock hold, any row whose id is already in use
+there — then record the row count of the snapshot the rows were taken from (never a
 recount of the live file) and only if the append succeeded, and sweep it
 once before anything else — and the
 file must not be rotated. The worked example is in the spec, §3 B2.

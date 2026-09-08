@@ -166,7 +166,7 @@ step 4, so regenerating is safe and idempotent).
 
    ```sh
    old=/path/to/runs.jsonl; new=/path/to/asks.jsonl
-   with_lock() {  # same exclusion as sitter's with_ledger_lock (it spins up to 60 s; this fails fast): with_lock <lock> <cmd...>
+   with_lock() {  # same exclusion as sitter's with_ledger_lock; flock/lockf wait, the mkdir tier fails fast (sitter's spins up to 60 s): with_lock <lock> <cmd...>
      l=$1; shift
      if command -v flock >/dev/null 2>&1; then flock "$l" "$@"
      elif command -v lockf >/dev/null 2>&1; then lockf -k "$l" "$@"
@@ -296,14 +296,28 @@ family is.) Before every rotation the owner checks, in this order:
    with_lock "$ledger.lock" sh -c '{ grep "\"expect_id\"" "$1" > "$3.snap" || [ $? -eq 1 ]; } &&
                                    tail -n +$(($2 + 1)) "$3.snap" > "$3" &&
                                    wc -l < "$3.snap" | tr -d " " > "$3.count"' sh "$ledger" "$n" "$tmp" &&
-   { grep -o '"event_id":"[^"]*"' "$asks" | sort -u > "$tmp.known"; } &&
-   { grep -v -F -f "$tmp.known" "$tmp" > "$tmp.new" || [ $? -eq 1 ]; } &&   # rows not already in the ask ledger
-   with_lock "$asks.lock" sh -c 'cat "$1" >> "$2"' sh "$tmp.new" "$asks" &&
-   ( umask 077; cp "$tmp.count" "$ledger.expect-count" ) ||                  # 2. persist the SNAPSHOT count, never a recount
+   # 2. under the ASK ledger's lock, in one critical section: drop rows already there (event_id),
+   #    refuse if a rescued id is already in use there (id reuse), then append what is left
+   ( umask 077; with_lock "$asks.lock" sh -c '
+       grep -o "\"event_id\":\"[^\"]*\"" "$2" | sort -u > "$1.known"
+       { grep -v -F -f "$1.known" "$1" > "$1.new" || [ $? -eq 1 ]; } || exit 1
+       grep -o "\"expect_id\":\"[^\"]*\"" "$2"      | sort -u > "$1.ids-asks"
+       grep -o "\"expect_id\":\"[^\"]*\"" "$1.new"  | sort -u > "$1.ids-new"
+       if grep -F -x -f "$1.ids-asks" "$1.ids-new" > "$1.collisions"; then
+         echo "id reuse: $(tr "\n" " " < "$1.collisions") already exist(s) in the ask ledger; nothing appended" >&2; exit 1
+       fi
+       cat "$1.new" >> "$2"
+     ' sh "$tmp" "$asks" ) &&
+   ( umask 077; cp "$tmp.count" "$ledger.expect-count" ) ||                  # 3. persist the SNAPSHOT count, never a recount
    { echo "rescue failed; count record left untouched so the next attempt still sees the excess" >&2; exit 1; }
    ```
 
-   Two things in the chain matter. The count that is persisted is the
+   Three things in the chain matter. The reads of the ask ledger (known
+   `event_id`s, ids in use), the collision test and the append happen
+   **inside one hold of the ask ledger's lock**, so an ask landing on the
+   ask ledger between the check and the append cannot slip past the check
+   — and the check is a step of the chain, not a separate block: a
+   collision makes the chain fail closed with nothing appended. The count that is persisted is the
    **row count of the snapshot the rescued rows were taken from** (`n` +
    excess), captured under the same lock hold; it is never re-derived from
    the live file afterwards — the writer that caused the excess is, by
@@ -315,24 +329,18 @@ family is.) Before every rotation the owner checks, in this order:
    written **only after the append succeeded**: a rescue whose append
    failed (lock busy on the mkdir tier, `ENOSPC`, a read-only ask ledger)
    must leave the record as it was, or the stranded rows would look
-   accounted for and the next rotation would archive them. Before
-   appending, also compare the `expect_id`s in
-   `$tmp.new` with the ids currently active in the ask ledger: a stranded
-   row whose id was *reused* on the ask ledger after the copy would, once
-   appended after that id's `ack`, reactivate the id and fire a spurious
-   nudge. Check it before the append (plain `sh`):
-
-   ```sh
-   grep -o '"expect_id":"[^"]*"' "$asks"    | sort -u > "$tmp.ids-asks"
-   grep -o '"expect_id":"[^"]*"' "$tmp.new" | sort -u > "$tmp.ids-new"
-   grep -F -x -f "$tmp.ids-asks" "$tmp.ids-new"     # must print nothing
-   ```
-
-   If it prints an id, that collision is a compound failure (a missed
-   writer *and* an id reuse); remove those rows from `$tmp.new`, append the
-   rest, and handle the removed ones by hand — register the stranded ask
-   under a fresh id with `expect` if it is still wanted, or drop it with
-   the requester's agreement — rather than appending the row.
+   accounted for and the next rotation would archive them. And the
+   collision test exists because a stranded row whose id was *reused* on
+   the ask ledger after the copy would, once appended after that id's
+   `ack`, reactivate the id and fire a spurious nudge — or, appended after
+   a later `expect`, replay a stale `ack` that silently kills the live ask.
+   When the chain stops on `id reuse: …`, that is a compound failure (a
+   missed writer *and* an id reuse): remove the colliding rows from
+   `$tmp` (`grep -v -F -f "$tmp.collisions" "$tmp" > "$tmp.keep"`, then
+   rerun the chain's step 2 with `$tmp.keep` in place of `$tmp`), and
+   handle the removed ones by hand — register the stranded ask under a
+   fresh id with `expect` if it is still wanted, or drop it with the
+   requester's agreement — never by appending the row.
 
    Then run `sweep --once` on the ask ledger once, at a moment the
    scheduled sweep is not in flight (the sweep lock is non-blocking, so a
@@ -367,8 +375,8 @@ it runs unchanged on `flock`, `lockf -k` and `mkdir` hosts):
 
 ```sh
 # count and rename under one hold of the ledger lock
-with_lock "$ledger.lock" sh -c '
-  [ -f "$1" ] || { echo "no ledger at $1; nothing to rotate" >&2; exit 1; }
+[ -f "$ledger" ] || { echo "no ledger at $ledger; nothing to rotate" >&2; exit 1; }
+( umask 077; with_lock "$ledger.lock" sh -c '
   actual=$(grep -c "\"expect_id\"" "$1" || true)
   if [ -f "$1.expect-count" ]; then expected=$(cat "$1.expect-count")
   elif [ "$actual" -eq 0 ]; then expected=0          # never held asks, or fresh after a rotation
@@ -376,7 +384,7 @@ with_lock "$ledger.lock" sh -c '
   [ "$actual" = "$expected" ] || { echo "expect-row count of $1 differs from the record (actual $actual, recorded $expected); not rotating" >&2; exit 1; }
   [ ! -e "$1.$2" ] || { echo "archive $1.$2 already exists; not rotating" >&2; exit 1; }
   mv "$1" "$1.$2" && printf "0\n" > "$1.expect-count"   # fresh file: no asks; keep the record present
-' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
+' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)" )
 ```
 
 (The explicit existence test matters: `mv -n` would skip a same-second
