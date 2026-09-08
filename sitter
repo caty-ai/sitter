@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Release version of this file. CI's tag job requires the pushed git tag to
 # equal "v$SITTER_VERSION", so bump this in the same commit as a release.
-SITTER_VERSION='0.5.1'
+SITTER_VERSION='0.5.2'
 
 usage() {
   cat <<'EOF'
@@ -83,7 +83,7 @@ sanitize_expect_value() {
 # Bash slices bytes under LC_ALL=C.  Remove an incomplete final UTF-8 sequence
 # rather than serialising a broken string when a byte limit lands mid-codepoint.
 truncate_utf8() {
-  local value=$1 limit=$2 clipped ch n i declared
+  local value=$1 limit=$2 clipped ch n i width j byte lower upper
   LC_ALL=C
   clipped=${value:0:limit}
   if [[ ${ICONV_OK:-false} == true ]]; then
@@ -91,25 +91,45 @@ truncate_utf8() {
       clipped=${clipped:0:${#clipped}-1}
     done
   else
-    n=${#clipped}; i=1
-    while ((i <= 4 && i <= n)); do
-      ch=${clipped:n-i:1}
+    if [[ $clipped != *[$'\x80'-$'\xff']* ]]; then
+      printf '%s' "$clipped"
+      return
+    fi
+    n=${#clipped}; i=0
+    while ((i < n)); do
+      # truncate_utf8_fallback_matches_iconv asserts this literal assignment via its DEBUG-trap counter.
+      ch=${clipped:i:1}
+      lower=128; upper=191
       case $ch in
-        [$'\x80'-$'\xbf']) i=$((i+1)); continue ;;
-        [$'\xc2'-$'\xdf']) declared=2 ;;
-        [$'\xe0'-$'\xef']) declared=3 ;;
-        [$'\xf0'-$'\xf4']) declared=4 ;;
+        [$'\x01'-$'\x7f']) i=$((i+1)); continue ;;
+        [$'\xc2'-$'\xdf']) width=2 ;;
+        $'\xe0') width=3; lower=160 ;;
+        [$'\xe1'-$'\xec'] | [$'\xee'-$'\xef']) width=3 ;;
+        $'\xed') width=3; upper=159 ;;
+        $'\xf0') width=4; lower=144 ;;
+        [$'\xf1'-$'\xf3']) width=4 ;;
+        $'\xf4') width=4; upper=143 ;;
         *) break ;;
       esac
-      ((declared > i)) && clipped=${clipped:0:n-i}
-      break
+      ((i + width <= n)) || break
+      for ((j = 1; j < width; j++)); do
+        printf -v byte '%d' "'${clipped:i+j:1}"
+        byte=$((byte & 255)) # Bash 3.2 may report a signed byte.
+        ((byte >= lower && byte <= upper)) || break
+        lower=128; upper=191
+      done
+      ((j == width)) || break
+      i=$((i+width))
     done
+    clipped=${clipped:0:i}
   fi
   printf '%s' "$clipped"
 }
 
 detect_iconv() {
   ICONV_OK=false
+  # Test-only seam for exercising fallback in CLI subprocesses.
+  if [[ ${SITTER_TEST_NO_ICONV:-} == 1 ]]; then return; fi
   if printf 'x' | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
      && ! printf '\x80' | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
     ICONV_OK=true

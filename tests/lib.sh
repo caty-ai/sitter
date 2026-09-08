@@ -97,7 +97,7 @@ run_test() {
   (
     set -e
     case $name in
-      ledger_replay_equivalence|ledger_sweep_equivalence|ledger_sweep_control_byte_equivalence)
+      ledger_replay_equivalence|ledger_sweep_equivalence|ledger_sweep_control_byte_equivalence|ledger_sweep_control_byte_equivalence_no_iconv)
         set -E
         trap 'printf "%s\n" "$name: assertion failed at line $LINENO: $BASH_COMMAND" >&2' ERR ;;
     esac

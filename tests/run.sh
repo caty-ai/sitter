@@ -10,6 +10,97 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/tests/lib.sh"
 HEARTBEAT_FIXTURE="$ROOT/tests/fixtures/heartbeat-worker.sh"
 
+truncate_utf8_fallback_matches_iconv() {
+  load_sitter_functions
+  local ascii200 ascii140 ascii139 index branch iterations=0 ascii_iterations
+  ascii200=$(printf '%200s' '' | tr ' ' x)
+  ascii140=$(printf '%140s' '' | tr ' ' x)
+  ascii139=$(printf '%139s' '' | tr ' ' x)
+  # Triples are input, byte limit, and independently specified expected bytes.
+  local cases=(
+    '' 512 ''
+    'ordinary ASCII' 512 'ordinary ASCII'
+    '日本語🙂' 512 '日本語🙂'
+    $'bad\xff' 512 'bad'
+    $'\xffbad' 512 ''
+    $'bad\xffmore' 512 'bad'
+    $'ok\x80' 512 'ok'
+    $'a\xc2b' 512 'a'
+    $'\xc0\x80x' 512 ''
+    $'\xe0\x80\x80x' 512 ''
+    $'\xed\xa0\x80x' 512 ''
+    $'\xf4\x90\x80\x80x' 512 ''
+    $'\xf5\x80\x80\x80x' 512 ''
+    $'\xf8\x88\x80\x80\x80x' 512 ''
+    $'\xef\xbf\xbf' 512 $'\xef\xbf\xbf'
+    $'\xf4\x8f\xbf\xbf' 512 $'\xf4\x8f\xbf\xbf'
+    $'\x7f' 512 $'\x7f'
+    $'\xc2\xa0' 512 $'\xc2\xa0'
+    '日本語' 4 '日'
+    '🙂' 3 ''
+    'ab🙂' 5 'ab'
+    "$ascii200" 140 "$ascii140"
+    "${ascii139}🙂" 140 "$ascii139"
+  )
+  for branch in false true; do
+    ICONV_OK=false
+    if [[ $branch == true ]]; then
+      detect_iconv
+      if [[ $ICONV_OK != true ]]; then
+        printf 'iconv branch compared: no (ICONV_OK=%s)\n' "$ICONV_OK"
+        break
+      fi
+      printf 'iconv branch compared: yes (ICONV_OK=%s)\n' "$ICONV_OK"
+    fi
+    for ((index = 0; index < ${#cases[@]}; index += 3)); do
+      if [[ $branch == true ]]; then
+        # libiconv on macOS accepts these non-RFC-3629 forms — above U+10FFFF
+        # and 5/6-byte — so only the fallback is pinned for them.
+        case ${cases[index]} in
+          $'\xf4'[$'\x90'-$'\xbf']* | [$'\xf5'-$'\xfd']*) continue ;;
+        esac
+      fi
+      printf '%s' "${cases[index+2]}" >"$CASE_DIR/expected"
+      truncate_utf8 "${cases[index]}" "${cases[index+1]}" >"$CASE_DIR/actual"
+      cmp "$CASE_DIR/expected" "$CASE_DIR/actual" || {
+        printf 'truncate_utf8 known-answer cmp mismatch: case %s ICONV_OK=%s\n' "$((index / 3))" "$ICONV_OK" >&2
+        return 1
+      }
+    done
+  done
+  ICONV_OK=false
+  # Count lead-byte reads: ASCII must bypass the walk; invalid high bytes must not.
+  set -T
+  # shellcheck disable=SC2154 # Literal DEBUG command from the sourced function.
+  trap 'if [[ $BASH_COMMAND == "ch=\${clipped:i:1}" ]]; then iterations=$((iterations + 1)); fi' DEBUG
+  truncate_utf8 "$ascii200" 140 >"$CASE_DIR/fast"
+  ascii_iterations=$iterations
+  iterations=0
+  truncate_utf8 $'\x80\xff' 512 >"$CASE_DIR/high"
+  trap - DEBUG
+  set +T
+  [[ $ascii_iterations -eq 0 && $iterations -gt 0 ]] || {
+    printf 'truncate_utf8 fast-path guard: ASCII=%s high-byte=%s iterations\n' "$ascii_iterations" "$iterations" >&2
+    return 1
+  }
+}
+
+ledger_sweep_control_byte_equivalence_no_iconv() (
+  # A subshell restores the caller's environment even if an assertion fails.
+  load_sitter_functions
+  unset SITTER_TEST_NO_ICONV
+  detect_iconv
+  local plain=$ICONV_OK
+  SITTER_TEST_NO_ICONV=1 detect_iconv
+  printf 'iconv seam: plain=%s forced=%s\n' "$plain" "$ICONV_OK"
+  [[ $ICONV_OK == false ]] || {
+    printf 'iconv seam guard: SITTER_TEST_NO_ICONV=1 did not force ICONV_OK=false\n' >&2
+    return 1
+  }
+  export SITTER_TEST_NO_ICONV=1
+  ledger_sweep_control_byte_equivalence
+)
+
 string_fast_paths_preserve_bytes() {
   load_sitter_functions
   local name value byte octet i size reference clean_iterations iterations=0
@@ -2555,7 +2646,7 @@ grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/nul
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in string_fast_paths_preserve_bytes ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in string_fast_paths_preserve_bytes ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence truncate_utf8_fallback_matches_iconv ledger_sweep_control_byte_equivalence_no_iconv ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"
