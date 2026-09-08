@@ -30,14 +30,19 @@ What the maintainer's production ledger actually contains (measured
 2026-09-08, `~/.claude/state/mission-control/runs.jsonl`, the file that a
 launchd job hands to `sweep --once` every 300 s):
 
-| fact | value |
-| --- | ---: |
-| rows / bytes | 13,884 / 8.0 MB |
-| rows carrying `"expect_id"` (the expect family: `expect` / `ack` / `nudge` / `awaiting_human`) | **6** |
-| `"schema":"sitter.v0"` rows without `expect_id` (`run` family: `start` / `heartbeat` / `end`) | 8,671 |
-| rows with no sitter schema at all (mission-control `mc-log`, appended without the ledger lock) | 5,213 |
+| fact | first snapshot | re-measured later that day (disjoint buckets) |
+| --- | ---: | ---: |
+| rows / bytes | 13,884 / 8.0 MB | 14,170 / 8.15 MB |
+| rows carrying `"expect_id"` (the expect family: `expect` / `ack` / `nudge` / `awaiting_human`) | **6** | **6** |
+| `"schema":"sitter.v0"` rows without `expect_id` (`run` family: `start` / `heartbeat` / `end`) | 8,671 | 8,857 |
+| `"schema":"sitter.v1"` rows | — | 0 |
+| rows with no sitter schema at all (mission-control `mc-log`, appended without the ledger lock) | 5,213 | 5,307 |
 
-So 99.96 % of the bytes that every sweep copies to its private stage and
+The second column's buckets sum exactly (6 + 8,857 + 5,307 = 14,170); the
+first snapshot's component counts over-count by the six expect rows, which
+is why they do not sum to 13,884. The bench (§5) keeps the first snapshot's
+13,884-row total and the same ≈ 5:3 run:foreign mix. So more than 99.9 % of
+the bytes that every sweep copies to its private stage and
 pushes through the replay loop belong to rows the replay filter discards on
 sight (`expect_replay_line` returns without parsing unless a line carries
 `"schema":"sitter.v1"`, or `"schema":"sitter.v0"` together with
@@ -106,29 +111,48 @@ the B4 hazard below. On a dedicated expect ledger none of this can happen;
 on a run ledger the foreign rows are harmless to sitter — nothing replays
 them — but they can still break the file for its other consumers.
 
-**A4 — Moving the live asks (one-time placement).** Do it while no sweep or
-watch can run (drop the kill file, or unload the scheduler), then:
+**A4 — Moving the live asks (one-time placement).** The hazard is a row of
+the expect family landing in the old file after the copy was taken: that
+ask (or that `ack`) is then in a file nothing sweeps, and it loses its
+deadman protection with no signal. So the placement has to quiesce **every
+writer of the family**, not just the scheduler. The kill file is not enough:
+`expect`, `ask`, `watch` and `sweep` honour it, but **`ack` does not** (it
+always appends), and ad-hoc or dashboard-driven invocations do not go
+through the scheduler at all.
 
-1. `grep '"expect_id"' old.jsonl >> new.jsonl` — **copy, never move or edit
-   in place**. This carries every expect-family row (v0 rows have
-   `"schema":"sitter.v0"` + `expect_id`; v1 `ask_*` / `refused` rows also
-   carry `expect_id`) in original order, which is all the replay needs:
-   active generations, acknowledgements and quarantine tombstones replay
-   identically from the copy.
-2. Point every expect-family invocation at `new.jsonl`.
-3. Only then remove the kill file / reload the scheduler.
+1. Stop everything that can invoke `expect` / `ack` / `ask` / `watch` /
+   `sweep` against `old.jsonl`: unload the scheduled sweep and watch jobs,
+   stop the ask pipeline (the wrapper scripts, the dashboard or agent that
+   calls them). Record `n=$(grep -c '"expect_id"' old.jsonl)`.
+2. `( umask 077; grep '"expect_id"' old.jsonl > new.jsonl )` — **copy,
+   never move or edit in place**; the subshell's `umask 077` gives the new
+   file mode 0600 now rather than at sitter's next touch. This carries every
+   expect-family row (v0 rows have `"schema":"sitter.v0"` + `expect_id`; v1
+   `ask_*` / `refused` rows also carry `expect_id`) in original order, which
+   is all the replay needs: active generations, acknowledgements and
+   quarantine tombstones replay identically from the copy.
+3. Point every expect-family invocation at `new.jsonl`, then check
+   `grep -c '"expect_id"' old.jsonl` is still `n`. If it grew, a writer was
+   not stopped: append the missing rows (`grep '"expect_id"' old.jsonl |
+   tail -n +$((n+1)) >> new.jsonl`) and find that writer before going on.
+4. Only then restart the jobs and the ask pipeline. Keep `n` — it is the
+   value Contract B's pre-rotation check compares against.
 
 The old rows stay in the old file and are inert once nothing sweeps it. Do
 not truncate or rewrite the old file: it is still the run ledger, and it
 stays append-only. Note that failure counters and quarantine keys under
 `$SITTER_HOME` include the ledger path (`ledger:<path> …`): a poison line's
-count restarts at zero on the new path, while an id that was quarantined
-stays burned because its `quarantine` row was copied and is replayed.
+count and a failing hook's count both restart at zero on the new path (so
+quarantine of a repeatedly failing hook can take up to three more failures),
+while an id that was quarantined stays burned because its `quarantine` row
+was copied and is replayed.
 
 **A5 — One `$SITTER_HOME` per expect ledger.** The sweep lock is
-`$SITTER_HOME/sweep.lock`, so sweeps of two different ledgers under one home
-serialise with each other. Harmless, but if the old shared file is still
-swept for any reason, give it a different home or stop sweeping it.
+`$SITTER_HOME/sweep.lock` and it is non-blocking on every tier: when two
+sweeps share a home, the second one exits successfully without doing any
+work. Two different ledgers swept under one home therefore skip each
+other's passes. If the old shared file is still swept for any reason, give
+it a different home or, better, stop sweeping it.
 
 ## 3. Contract B — run ledgers are rotated by rename
 
@@ -144,32 +168,55 @@ Facts this contract rests on (all in `sitter`, unchanged by this release):
 - The lock lives beside the ledger (`<ledger>.lock`; on the mkdir tier also
   `<ledger>.lock.d`), not inside it.
 
-**B1 — Rotation is rename + fresh file.** The owner of a run ledger (the
-supervisor that chose the path — in the maintainer's deployment,
-mission-control) rotates it by renaming the file to an archive name. The
-next append from any live `sitter run` recreates the path (mode 0600, umask
-077). Do not truncate, copy-then-truncate, or rewrite the file in place —
+**B1 — Rotation is rename + fresh file, and the precondition is about
+references, not contents.** A ledger may be rotated only when **no
+expect-family invocation and no scheduled job names its path** — nothing
+runs `expect` / `ack` / `ask` / `watch` / `sweep` with that `--ledger`. That
+is the property that makes the file's history disposable: the run family
+never reads it, foreign rows are never replayed, and expect rows can only
+be inert copies left behind by A4. (The file *containing* expect rows is
+therefore not, by itself, the disqualifier; the file being *read* by the
+family is.) Before every rotation the owner checks, in this order:
+
+1. No wrapper script, scheduler entry or dashboard configuration passes this
+   path to an expect-family verb (on the maintainer's machine: the two
+   launchd plists and the `sitter-ask*` scripts).
+2. `grep -c '"expect_id"' <ledger>` equals the value recorded at placement
+   (A4's `n`), or `0` for a file created after the first rotation. A larger
+   count means something still writes asks here — stop and find it; do not
+   rotate.
+
+Then the owner (the supervisor that chose the path — in the maintainer's
+deployment, mission-control) renames the file to an archive name. The next
+append from any live `sitter run` recreates the path (mode 0600, umask 077).
+Do not truncate, copy-then-truncate, or rewrite the file in place —
 in-place replacement is out of contract for every ledger (v0.5.4).
 
 **B2 — Take the ledger lock for the rename.** Renaming is safe against
 sitter's own appends even without the lock (each row is one `>>` write into
 whichever file the path names at that instant), but holding `<ledger>.lock`
-with the same primitive sitter uses on that host (`flock` where available,
-`lockf -k` on macOS) makes the rotation a clean boundary: every row appended
-before the rename is in the archive, every row after is in the fresh file,
-and a foreign writer that also takes the lock cannot straddle it.
+with the same primitive sitter uses on that host makes the rotation a clean
+boundary: every row appended before the rename is in the archive, every row
+after is in the fresh file, and a foreign writer that also takes the lock
+cannot straddle it. The primitive is `flock` where available, otherwise
+`lockf -k` (macOS); on a host with neither, sitter uses the `mkdir
+<ledger>.lock.d` tier — take it the same way (`mkdir` the directory, rename,
+`rmdir` it) or rename without the lock.
 
 **B3 — Leave the lock alone.** `<ledger>.lock` is not part of the rotation.
 Do not rename or delete it, and never remove a `<ledger>.lock.d` directory —
 that is an in-progress append on the mkdir tier.
 
-**B4 — Never rotate an expect ledger.** The expect family replays its whole
-history: a rotated (shorter) file is seen by the v0.5.4 guard as a
-replacement and replayed from scratch, so every active expectation,
-prepared ask and quarantine tombstone simply disappears — no nudge, no
-`awaiting_human`, no error. This is precisely why Contract A exists: the
-run ledger becomes rotatable **because** it holds nothing sitter replays.
-A shared ledger (A2) must not be rotated.
+**B4 — Never rotate a ledger the expect family reads.** The expect family
+replays its whole history: a rotated (shorter) file is seen by the v0.5.4
+guard as a replacement and replayed from scratch, so every active
+expectation, prepared ask and quarantine tombstone simply disappears — no
+nudge, no `awaiting_human`, no error, exit 0 (reproduced at review with
+`expect` → `run` → rename under the lock → `run` → `sweep --once`). This is
+precisely why Contract A exists: the run ledger becomes rotatable
+**because** nothing sweeps it any more, not because it is clean. A shared
+ledger (A2) must not be rotated; after A4 the old `runs.jsonl` is rotatable
+only once step 3 of A4 has been verified and B1's two checks pass.
 
 **B5 — Archives belong to the owner.** sitter never reads a rotated file;
 retention, compression and deletion of archives are the owner's policy and
@@ -190,7 +237,15 @@ on their own:
   dedicated ledger; one-time placement per A4.
 - mission-control `server/agents.js`: tail both files (run ledger for runs,
   ask ledger for asks); rotation of `runs.jsonl` per Contract B is
-  mission-control's issue.
+  mission-control's issue. After A4, `runs.jsonl` still holds the six inert
+  expect rows that were copied out; it becomes rotatable because no
+  expect-family job names it any more (B1's checks: no reference, and
+  `grep -c '"expect_id"'` still equals A4's `n`), not because those rows are
+  gone.
+
+Tracking issues: host wiring —
+https://github.com/shojikumaru/alpha-mission-control/issues/52; dashboard
+dual tail + rotation tool — https://github.com/shojikumaru/alpha-mission-control/issues/53.
 
 Acceptance (the #74 Done-when item this lane cannot close by itself): the
 sweep launchd log shows the new ledger path, and `watch --once` acks a test
@@ -201,9 +256,10 @@ ask on it.
 `tests/bench-ledger.sh --production-shape` (added in this lane) generates a
 ledger with the production shape of §0 — `tests/fixtures/gen-ledger.sh
 --production-shape 13884`: 13,878 run-family and foreign rows in the
-production 5:3 ratio, then the same six expect-family rows the default
-fixture ends with (one due, one acked, one quarantined) — and a six-row
-ledger holding only those six rows. Each shape × verb is timed on a fresh
+production's ≈ 5:3 ratio (8,675 run / 5,203 foreign in the fixture; the
+production counts differ slightly), then the same six expect-family rows
+the default fixture ends with (one due, one acked, one quarantined) — and a
+six-row ledger holding only those six rows. Each shape × verb is timed on a fresh
 copy with a private `$SITTER_HOME`, three repetitions, median reported.
 
 Results (macOS arm64, Apple Silicon, `sitter` 0.5.5, 2026-09-08,

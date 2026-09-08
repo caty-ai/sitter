@@ -172,25 +172,36 @@ from foreign writers are discarded only after they have been staged and read.
 On the maintainer's production ledger that meant 13,884 rows replayed for
 6 expect-family rows on every 5-minute sweep. With a dedicated ledger the
 cost grows with the ask history alone. The reasoning, the measured numbers,
-and the one-time procedure for moving live asks to a new ledger (copy the
-`"expect_id"` rows in order while no sweep can run; never move or edit the
-old file in place) are in
-[docs/specs/ledger-separation.md](specs/ledger-separation.md).
+and the one-time procedure for moving live asks to a new ledger (stop every
+expect-family writer — the kill file does not stop `ack` — copy the
+`"expect_id"` rows in order under `umask 077`, repoint, verify nothing
+landed in the old file meanwhile; never move or edit the old file in place)
+are in [docs/specs/ledger-separation.md](specs/ledger-separation.md).
 
-A ledger that holds only run-family rows may be **rotated by its owner**:
-rotation is *rename + fresh file*. `sitter run` appends each event by
-reopening the ledger path under `<ledger>.lock` and creates the file if it
-is missing, so the next append after a rename lands in a fresh file at the
-same path; it never reads the ledger back, and no verb replays run-family
-rows. Hold `<ledger>.lock` for the rename (with `flock`, or `lockf -k` on
-macOS) so the rotation is a clean boundary; leave the lock file and any
-`<ledger>.lock.d` directory alone. **Never rotate a ledger that carries
-expect-family rows**: the expect family replays its whole history, a
-shortened file is treated as a replacement and replayed from scratch, and
-every active expectation, prepared ask and quarantine tombstone silently
-disappears. In-place replacement (truncate, rewrite, restore over) stays out
-of contract for every ledger. Rotated files are the owner's to keep or
-delete; sitter never reads them.
+A ledger that **no expect-family invocation reads or appends to** — in
+practice the run ledger, which may also hold foreign rows and, after a
+migration, inert copies of old expect rows — may be **rotated by its
+owner**: rotation is *rename + fresh file*. Before rotating, the owner
+checks that no wrapper, scheduler entry or dashboard passes the path to
+`expect` / `ack` / `ask` / `watch` / `sweep`, and that `grep -c
+'"expect_id"'` on the file still equals the count recorded when the asks
+were moved out (or `0` for a file created after a rotation); a larger count
+means something still writes asks there, and the file must not be rotated.
+`sitter run` appends each event by reopening the ledger path under
+`<ledger>.lock` and creates the file if it is missing, so the next append
+after a rename lands in a fresh file at the same path; it never reads the
+ledger back, and no verb replays run-family rows. Hold `<ledger>.lock` for
+the rename with the primitive sitter uses on that host (`flock`; `lockf -k`
+on macOS; on a host with neither, sitter's `mkdir <ledger>.lock.d` tier —
+take it the same way or rename without the lock) so the rotation is a clean
+boundary; otherwise leave the lock file and any `<ledger>.lock.d` directory
+alone. **Never rotate a ledger the expect family reads**: it replays its
+whole history, a shortened file is treated as a replacement and replayed
+from scratch, and every active expectation, prepared ask and quarantine
+tombstone silently disappears (exit 0, no nudge, no `awaiting_human`).
+In-place replacement (truncate, rewrite, restore over) stays out of
+contract for every ledger. Rotated files are the owner's to keep or delete;
+sitter never reads them.
 
 ## Hook reasons and payload
 
