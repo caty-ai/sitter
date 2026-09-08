@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Canonical portable integration suite. bash and POSIX tools only; python3 is
 # optional and used solely by assert_json_valid.
+# shellcheck disable=SC2030,SC2031 # Locale cases deliberately isolate changes in subshells.
 set -euo pipefail
 
 unset SITTER_STALL_AFTER SITTER_TIMEOUT SITTER_RETRIES SITTER_COOLDOWN SITTER_HEARTBEAT_FILE
@@ -2347,6 +2348,88 @@ ledger_replay_equivalence() {
   assert_replay_equivalent "${line/日本語/$'日本語\nsecond'}" multiline-field
 }
 
+hook_sees_operator_locale() (
+  local hook="$CASE_DIR/locale-hook.sh" path capture failed=0 detail
+  cat >"$hook" <<'HOOK'
+#!/bin/sh
+printf '%s\n' "${LC_ALL-unset}" >>"$LOCALE_CAPTURE"
+HOOK
+  chmod +x "$hook"
+  for path in run sweep unset; do
+    capture="$CASE_DIR/$path.locale"
+    (
+      unset LC_ALL LC_CTYPE
+      export LANG=C.UTF-8 LOCALE_CAPTURE="$capture" SITTER_HOME="$CASE_DIR/home-$path"
+      if [[ $path != unset ]]; then export LC_ALL=en_US.UTF-8; fi
+      if [[ $path == sweep ]]; then
+        "$BASH" "$SITTER" expect --ledger "$CASE_DIR/$path.jsonl" --on-fail "$hook" \
+          --id p1 --to worker --text hi --sla 0
+        SITTER_SWEEP_LOCKED=true "$BASH" "$SITTER" sweep --once \
+          --ledger "$CASE_DIR/$path.jsonl" --on-fail "$hook"
+      else
+        assert_exit 3 "$BASH" "$SITTER" run --ledger "$CASE_DIR/$path.jsonl" \
+          --on-fail "$hook" --timeout 20 --grace 0 -- sh -c 'exit 3'
+      fi
+    )
+    if [[ $path == unset ]]; then
+      printf '%s\n' unset >"$CASE_DIR/expected.locale"
+    else
+      printf '%s\n' en_US.UTF-8 >"$CASE_DIR/expected.locale"
+    fi
+    # Each path invokes one hook; missing, extra, or changed lines must fail.
+    if ! cmp "$CASE_DIR/expected.locale" "$capture"; then
+      printf 'hook locale mismatch: %s path\n' "$path" >&2
+      failed=1
+    fi
+  done
+  if ((failed)); then return 1; fi
+
+  # Exercise the real emitter with 171 three-byte characters (513 bytes).
+  # Keep this in the test shell so /bin/bash also tests its byte-count semantics.
+  load_sitter_functions
+  export LC_ALL=en_US.UTF-8
+  detail=$(printf '%171s' '' | sed 's/ /日/g')
+  printf '%s' "$detail" | wc -c | tr -d ' ' >"$CASE_DIR/detail.bytes"
+  printf '513\n' >"$CASE_DIR/expected.bytes"
+  cmp "$CASE_DIR/expected.bytes" "$CASE_DIR/detail.bytes"
+  # shellcheck disable=SC2034 # Read by the loaded emit_event and new_event_id functions.
+  local EVENT_SEQUENCE=0 EVENT_CLOCK_NANO=false PROJECT='' AGENT='' TASK='' SESSION_ID=''
+  # shellcheck disable=SC2034 # Read by the loaded emit_event function.
+  local WORK_CWD=$CASE_DIR RUN_ID=test LOG_PATH='' STALL_AFTER=0 RETRIES=0 COOLDOWN=0 IDEMPOTENT_BOOL=false
+  detect_iconv
+  # shellcheck disable=SC2329 # Called by the loaded emit_event function.
+  append_locked() { printf '%s\n' "$1"; }
+  emit_event fail failed 1 "$detail" 3 failure >"$CASE_DIR/detail.jsonl"
+  grep -Fq '"detail_truncated":true' "$CASE_DIR/detail.jsonl" || {
+    printf '513-byte multibyte detail must set detail_truncated=true\n' >&2
+    return 1
+  }
+)
+
+ledger_sweep_exported_locale_equivalence() (
+  local input="$CASE_DIR/generated.jsonl" ledger="$CASE_DIR/replay.jsonl" setting before
+  bash "$ROOT/tests/fixtures/gen-ledger.sh" 2000 "$input"
+  : >"$CASE_DIR/empty"
+  for setting in LANG-only C.UTF-8 en_US.UTF-8 C; do
+    (
+      unset LC_ALL LC_CTYPE
+      export LANG=C.UTF-8
+      if [[ $setting != LANG-only ]]; then export LC_ALL=$setting; fi
+      cp "$input" "$ledger"
+      before=$(wc -l <"$ledger")
+      SITTER_SWEEP_LOCKED=true SITTER_HOME="$CASE_DIR/home-$setting" SPY_FILE="$CASE_DIR/$setting.spy" \
+        "$BASH" "$SITTER" sweep --once --ledger "$ledger" --on-fail "$SPY" \
+        >"$CASE_DIR/$setting.out" 2>"$CASE_DIR/$setting.err"
+      tail -n +"$((before + 1))" "$ledger" | LC_ALL=C sed -E 's/"ts":"[^"]*"/"ts":"CLOCK"/g; s/"event_id":"[^"]*"/"event_id":"EVENT"/g' >"$CASE_DIR/$setting.tail"
+      cmp "$CASE_DIR/empty" "$CASE_DIR/$setting.err"
+      grep -q '"event":"nudge".*"expect_id":"due"' "$CASE_DIR/$setting.tail"
+      printf '%s tail rows: %s\n' "$setting" "$(wc -l <"$CASE_DIR/$setting.tail" | tr -d ' ')"
+      cmp "$CASE_DIR/LANG-only.tail" "$CASE_DIR/$setting.tail"
+      cmp "$CASE_DIR/LANG-only.out" "$CASE_DIR/$setting.out"
+    )
+  done
+)
+
 ledger_sweep_equivalence() {
   unset LC_ALL LC_CTYPE
   export LANG=C.UTF-8
@@ -2646,7 +2729,7 @@ grep -q '"event":"end","status":"success"' "$warmup_dir/ledger.jsonl" 2>/dev/nul
 rm -rf "$warmup_dir"
 
 PASS=0; FAIL=0; STARTED=$(date +%s)
-for test_name in string_fast_paths_preserve_bytes ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence truncate_utf8_fallback_matches_iconv ledger_sweep_control_byte_equivalence_no_iconv ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
+for test_name in string_fast_paths_preserve_bytes ledger_sweep_io_failure_cleanup ledger_sweep_delta_is_key_local ledger_replay_equivalence ledger_sweep_equivalence ledger_sweep_control_byte_equivalence truncate_utf8_fallback_matches_iconv ledger_sweep_control_byte_equivalence_no_iconv hook_sees_operator_locale ledger_sweep_exported_locale_equivalence ledger_sweep_staged_ack_race ledger_sweep_live_reducer_equivalence normal help_and_version_are_stdout_success usage_error_paths_stay_stderr_exit_two help_after_separator_reaches_wrapped_command help_after_separator_still_hits_denylist hang_restart nonidempotent_stall_reason_contract cooldown_crossing_restart_does_not_falsely_stall heartbeat_fresh_keeps_silent_worker_alive heartbeat_frozen_stalls_silent_worker heartbeat_rejects_disabled_stall heartbeat_symlink_is_refused heartbeat_ask_watch_contract heartbeat_child_sees_absolute_relative_path heartbeat_restart_resets_baseline heartbeat_flag_unset_detail_is_unchanged heartbeat_deleted_midrun_falls_back_to_log heartbeat_symlink_swap_midrun_falls_back_to_log heartbeat_empty_value_is_refused heartbeat_unwritable_parent_is_refused heartbeat_directory_path_is_refused heartbeat_attempt_touch_failure_is_not_a_stall heartbeat_environment_does_not_change_ask_or_watch heartbeat_collision_with_ledger_is_refused heartbeat_collision_with_ledger_lock_is_refused heartbeat_collision_with_kill_file_is_refused heartbeat_collision_with_log_is_refused heartbeat_normalized_collision_with_ledger_is_refused heartbeat_export_is_scoped_to_child heartbeat_frozen_does_not_override_advancing_log heartbeat_is_ignored_by_expect_ack_and_sweep heartbeat_help_lists_flag budget per_invocation_retry_budget backoff_persists_across_invocations old_format_cooldown_is_compatible denied missing_hook stall_zero stall_zero_padded env_timeout_explicit json_ledger allowlist_is_command_not_label denylist_adjacency denylist_launcher_unwrap denylist_shell_bundle_and_nice_residue expect_ack_stays_quiet expect_escalates_once_per_state out_of_order_ack_and_id_reuse sweep_lock_contention_is_quiet poison_is_quarantined_once sweep_kill_switch_is_quiet ack_race_replay_is_absorbing id_charset_and_sanitization multibyte_survives_quote_and_sanitize quarantined_id_is_burned failcount_isolation quarantine_is_per_ledger orphan_nudge_is_not_live orphan_quarantine_does_not_burn_admission orphan_quarantine_does_not_suppress_live_expect ack_clears_side_file_state sweep_ignores_side_file_marks term_trapping_hook_is_killed hook_orphan_children_are_reaped hook_timeout_group_gate_kills_trapping_child hash_tool_fallback zero_padded_numerics event_id_sequence_is_unique missing_command_propagates_127 single_argument_metacharacter_path_is_literal stall_kills_grandchild term_exiting_leader_still_kills_grandchild ledger_symlink_is_refused ledger_lock_symlink_is_refused sweep_mkdir_lock_tier_is_unavailable mkdir_lock_stale_break_is_single_shot mkdir_lock_live_holder_not_stolen sweep_heartbeat_refreshes_lockdir stolen_lock_release_spares_usurper assert_json_valid_without_python3_skips_once assert_json_valid_requires_python3_in_ci denylist_deployment_tokens expect_stop_is_refused_acked expect_event_id_sequence_is_unique dash_prefixed_log_path_works symlink_log_path_is_followed cooldown_used_count_is_always_zero elapsed_cooldown_does_not_sleep stop_during_catchup_cooldown_observed stop_during_backoff_observed denylist_exact_eight_env_layers denylist_launcher_boundary_gaps; do
   [[ ${SITTER_ASK_WATCH_ONLY:-false} != true ]] || continue
   [[ -z ${SITTER_TEST_FILTER:-} || " $SITTER_TEST_FILTER " == *" $test_name "* ]] || continue
   run_test "$test_name"

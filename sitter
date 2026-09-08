@@ -34,7 +34,7 @@ timestamp() { date -u '+%Y-%m-%dT%H:%M:%S.000Z'; }
 # cannot turn a ledger line into multiple JSONL records.
 json_quote() {
   local value=$1 ch code i escaped=''
-  LC_ALL=C
+  local LC_ALL=C
   if [[ $value != *[\"\\$'\x01'-$'\x1f']* ]]; then
     printf '"%s"' "$value"
     return
@@ -65,7 +65,7 @@ valid_expect_id() { [[ $1 =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
 # field extraction); multibyte UTF-8 passes through untouched.
 sanitize_expect_value() {
   local value=$1 ch i clean=''
-  LC_ALL=C
+  local LC_ALL=C
   if [[ $value != *[\"\\$'\x01'-$'\x1f']* ]]; then
     printf '%s' "$value"
     return
@@ -84,7 +84,7 @@ sanitize_expect_value() {
 # rather than serialising a broken string when a byte limit lands mid-codepoint.
 truncate_utf8() {
   local value=$1 limit=$2 clipped ch n i width j byte lower upper
-  LC_ALL=C
+  local LC_ALL=C
   clipped=${value:0:limit}
   if [[ ${ICONV_OK:-false} == true ]]; then
     while [[ -n $clipped ]] && ! printf '%s' "$clipped" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; do
@@ -265,12 +265,16 @@ new_event_id() {
   fi
 }
 
+byte_length() {
+  local LC_ALL=C
+  printf '%s' "${#1}"
+}
+
 emit_event() {
   local event=$1 status=$2 attempt=$3 detail=$4 exit_code=$5 reason=$6 hook_reason=${7:-}
   local event_id hook_exit='null' short_detail detail_truncated=false record
-  LC_ALL=C
   short_detail=$(truncate_utf8 "$detail" 512)
-  if ((${#detail} > 512)); then detail_truncated=true; fi
+  if (( $(byte_length "$detail") > 512 )); then detail_truncated=true; fi
   EVENT_SEQUENCE=$((EVENT_SEQUENCE + 1))
   event_id=$(new_event_id)
   if [[ -n $hook_reason ]]; then
@@ -288,7 +292,6 @@ emit_event() {
 
 invoke_hook() {
   local event=$1 reason=$2 event_id=$3 attempt=$4 detail=$5 text short_detail payload code hookin pid deadline term_deadline reap_deadline hook_ts hook_group=false escalated=false
-  LC_ALL=C
   text=$(truncate_utf8 "$detail" 140)
   short_detail=$(truncate_utf8 "$detail" 200)
   hook_ts=$(timestamp)
@@ -362,7 +365,7 @@ invoke_hook() {
 emit_expect_event() {
   local event=$1 state=$2 expect_id=$3 to=$4 text_value=$5 sla=$6 nudges=$7 detail=$8
   local event_id short_text short_detail detail_truncated=false record
-  LC_ALL=C
+  local LC_ALL=C
   short_text=$(truncate_utf8 "$text_value" 140)
   short_detail=$(truncate_utf8 "$detail" 512)
   ((${#detail} > ${#short_detail})) && detail_truncated=true
@@ -391,7 +394,7 @@ build_ask_event_record() {
   local event=$1 state=$2 expect_id=$3 to=$4 text_value=$5 sla=$6 nudges=$7 detail=$8
   local exit_code=$9 reply_file=${10} reply_bytes=${11} reply_sha=${12}
   local event_id short_text short_detail detail_truncated=false record bytes_json sha_json
-  LC_ALL=C
+  local LC_ALL=C
   short_text=$(truncate_utf8 "$text_value" 140)
   short_detail=$(truncate_utf8 "$detail" 512)
   ((${#detail} > ${#short_detail})) && detail_truncated=true
