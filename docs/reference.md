@@ -149,6 +149,14 @@ lock before parsing. Repeated malformed sitter-claiming lines and failed hooks
 are quarantined after three failures. Shared-ledger paths are trusted private
 directories in v0; they do not receive full symlink/TOCTOU hardening.
 
+The live ledger is append-only: supported writers only append, and replacing it
+in place (for example, hand compaction or restoring a backup over it) is out of
+contract. Since v0.5.4, a sweep verifies that the first `stage_bytes` bytes of the
+live ledger match its private stage before trusting the staged replay, falling
+back to a full replay for affected candidates if the ledger was replaced or
+truncated. Before v0.5.4, an equal-or-longer replacement could produce a spurious
+nudge.
+
 ## Hook reasons and payload
 
 `--on-fail` is the single notification integration point. It receives the

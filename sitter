@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Release version of this file. CI's tag job requires the pushed git tag to
 # equal "v$SITTER_VERSION", so bump this in the same commit as a release.
-SITTER_VERSION='0.5.3'
+SITTER_VERSION='0.5.4'
 
 usage() {
   cat <<'EOF'
@@ -1131,7 +1131,7 @@ watch() {
 
 sweep_locked() (
   local stage replay line rc key epoch now next_state event reason current_nudges hook_code
-  local stage_bytes live_bytes delta current_live_state live_event delta_rc=0
+  local stage_bytes live_bytes stage_sha live_sha delta current_live_state live_event delta_rc=0
   stage='' replay='' delta=''
   # A subshell scopes cleanup to this pass without replacing caller traps.
   trap 'rm -f -- "$stage" "${stage:+${stage}.bytes}" "$replay" "${replay:+${replay}.last}" "$delta"' EXIT
@@ -1144,6 +1144,9 @@ sweep_locked() (
     rm -f "$stage" "${stage}.bytes"; return 1
   fi
   read -r stage_bytes <"${stage}.bytes"
+  if ! stage_sha=$(hash256_stdin <"$stage"); then
+    rm -f "$stage" "${stage}.bytes"; return 1
+  fi
   rm -f "${stage}.bytes"
   chmod 600 "$stage"
   [[ -s $stage ]] || return 0
@@ -1213,11 +1216,16 @@ sweep_locked() (
       if ! tail -c "+$((stage_bytes + 1))" "$LEDGER" >"$delta"; then
         delta_rc=1; break
       fi
-      # A shorter replacement invalidates the offset. Measure after tail so
-      # replacement between the read and this check also forces full replay.
+      # Truncation or a replaced prefix invalidates the offset. Measure after
+      # tail, then hash the prefix before trusting the staged state.
       if ! live_bytes=$(wc -c <"$LEDGER"); then delta_rc=1; break; fi
       if ((live_bytes >= stage_bytes)); then
-        if grep -Fq -- '"expect_id":"'"$key"'"' "$delta"; then rc=0; else rc=$?; fi
+        if ! live_sha=$(head -c "$stage_bytes" "$LEDGER" | hash256_stdin); then
+          delta_rc=1; break
+        fi
+        if [[ $live_sha == "$stage_sha" ]]; then
+          if grep -Fq -- '"expect_id":"'"$key"'"' "$delta"; then rc=0; else rc=$?; fi
+        fi
       fi
     fi
     # Only a definite no-match can trust the staged state.
