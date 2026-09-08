@@ -166,11 +166,14 @@ step 4, so regenerating is safe and idempotent).
 
    ```sh
    old=/path/to/runs.jsonl; new=/path/to/asks.jsonl
-   with_lock() {  # same exclusion as sitter's with_ledger_lock; flock/lockf wait, the mkdir tier fails fast (sitter's spins up to 60 s): with_lock <lock> <cmd...>
+   with_lock() {  # same exclusion as sitter's with_ledger_lock; every tier waits for a held lock (mkdir tier: up to 60 s, like sitter's): with_lock <lock> <cmd...>
      l=$1; shift
      if command -v flock >/dev/null 2>&1; then flock "$l" "$@"
      elif command -v lockf >/dev/null 2>&1; then lockf -k "$l" "$@"
-     else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d" 2>/dev/null || true; return $rc; fi  # keep the hold short: sitter evicts a lock dir older than 300 s and then owns it
+     else
+       i=0; until mkdir "$l.d" 2>/dev/null; do i=$((i + 1)); [ "$i" -lt 60 ] || { echo "lock $l.d held for 60 s; giving up" >&2; return 1; }; sleep 1; done
+       "$@"; rc=$?; rmdir "$l.d" 2>/dev/null || true; return $rc   # keep the hold short: sitter evicts a lock dir older than 300 s and then owns it
+     fi
    }
    [ ! -L "$new" ] || { echo "$new is a symlink: refusing" >&2; exit 1; }
    [ ! -s "$new" ] || { echo "$new exists and is not empty: refusing to overwrite a ledger" >&2; exit 1; }
@@ -201,7 +204,9 @@ step 4, so regenerating is safe and idempotent).
    sitter never writes one, and it is a poison line wherever it sits, so
    it is not something to carry over.
 3. Point every expect-family invocation at `new.jsonl` (wrappers, plists,
-   dashboard configuration), and record `n` beside the old ledger:
+   dashboard configuration) — and, per A5, give it its own `$SITTER_HOME`
+   unless nothing will ever sweep the old path again — and record `n`
+   beside the old ledger:
    `( umask 077; printf '%s\n' "$n" > "$old.expect-count" )`. That file is what Contract
    B's pre-rotation check reads, possibly months later and by a different
    tool; it must never be re-derived from the old file's current contents,
@@ -334,13 +339,20 @@ family is.) Before every rotation the owner checks, in this order:
    the ask ledger after the copy would, once appended after that id's
    `ack`, reactivate the id and fire a spurious nudge — or, appended after
    a later `expect`, replay a stale `ack` that silently kills the live ask.
-   When the chain stops on `id reuse: …`, that is a compound failure (a
-   missed writer *and* an id reuse): remove the colliding rows from
+   When the chain stops on `id reuse: …`, remove the colliding rows from
    `$tmp` (`grep -v -F -f "$tmp.collisions" "$tmp" > "$tmp.keep"`, then
-   rerun the chain's step 2 with `$tmp.keep` in place of `$tmp`), and
-   handle the removed ones by hand — register the stranded ask under a
-   fresh id with `expect` if it is still wanted, or drop it with the
-   requester's agreement — never by appending the row.
+   rerun steps 2 **and 3** with `$tmp.keep` in place of `$tmp`, keeping
+   step 1's count file), and handle the removed rows by hand according to
+   what they are — never by appending them:
+   - a stray **`ack`** (the common case: someone answered an ask that had
+     already been migrated, and the acknowledgement went to the old path)
+     → re-issue it on the ask ledger: `sitter ack --ledger asks.jsonl
+     --id <id>`; likewise a stray `nudge` / `awaiting_human` needs no
+     action beyond letting the ask ledger's own sweep continue;
+   - a stray **`expect`** / `ask_prepare` for an id that is live on the
+     ask ledger (a missed writer *and* an id reuse — a compound failure) →
+     register it under a fresh id with `expect` if it is still wanted, or
+     drop it with the requester's agreement.
 
    Then run `sweep --once` on the ask ledger once, at a moment the
    scheduled sweep is not in flight (the sweep lock is non-blocking, so a
@@ -395,16 +407,23 @@ The primitive is `flock` where available, otherwise `lockf -k` (macOS); on a
 host with neither, sitter uses the `mkdir <ledger>.lock.d` tier — take it
 the same way (`mkdir` the directory, count, rename, `rmdir` it; if the
 `rmdir` fails, leave it alone — sitter has taken it over, and it evicts any
-lock directory older than 300 s, so keep the hold short) or rename without
-the lock.
+lock directory older than 300 s, so keep the hold short). **Never rename
+without the lock**: an unlocked rename is safe for sitter's *own* rows
+(each lands whole in one file), but a writer that check 1 missed would
+land its ask in what becomes the archive, where no documented check ever
+looks again — with the lock held, that same append blocks and lands in
+the fresh file, where the reset record (`0`) exposes it as excess at the
+next check and the B1.2 rescue recovers it. If the `mkdir` fails because
+the directory is held, wait and retry (the `with_lock` helper does, for up
+to 60 s, like sitter's own tier) rather than proceeding unlocked.
 
 **B3 — Leave the lock alone.** `<ledger>.lock` is not part of the rotation.
 Do not rename or delete it, and never remove a `<ledger>.lock.d` directory —
 that is an in-progress append on the mkdir tier.
 
 **B4 — Never rotate a ledger the expect family reads.** The expect family
-replays its whole history: a rotated (shorter) file is seen by the v0.5.4
-guard as a replacement and replayed from scratch, so every active
+replays its whole history from the file at the path: after a rotation the
+next pass stages a fresh file that holds no expectations, so every active
 expectation, prepared ask and quarantine tombstone simply disappears — no
 nudge, no `awaiting_human`, no error, exit 0 (reproduced at review with
 `expect` → `run` → rename under the lock → `run` → `sweep --once`). This is

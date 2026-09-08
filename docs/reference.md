@@ -210,12 +210,17 @@ after a rename lands in a fresh file at the same path; it never reads the
 ledger back, and no verb replays run-family rows. Hold `<ledger>.lock` for
 the rename with the primitive sitter uses on that host (`flock`; `lockf -k`
 on macOS; on a host with neither, sitter's `mkdir <ledger>.lock.d` tier —
-take it the same way or rename without the lock) so the rotation is a clean
-boundary; otherwise leave the lock file and any `<ledger>.lock.d` directory
-alone. **Never rotate a ledger the expect family reads**: it replays its
-whole history, a shortened file is treated as a replacement and replayed
-from scratch, and every active expectation, prepared ask and quarantine
-tombstone silently disappears (exit 0, no nudge, no `awaiting_human`).
+take it the same way, waiting if it is held; never rename without the lock,
+or a writer the reference audit missed can land an ask in the archive)
+so the rotation is a clean boundary; otherwise leave the lock file and any
+`<ledger>.lock.d` directory alone. Give a new expect ledger its own
+`$SITTER_HOME` if the old path is still swept by anything (the sweep lock
+is per home and non-blocking, so two ledgers under one home skip each
+other's passes). **Never rotate a ledger the expect family reads**: it
+replays its whole history from the file at the path, the next pass stages
+a fresh file with no expectations in it, and every active expectation,
+prepared ask and quarantine tombstone silently disappears (exit 0, no
+nudge, no `awaiting_human`).
 In-place replacement (truncate, rewrite, restore over) stays out of
 contract for every ledger. Rotated files are the owner's to keep or delete;
 sitter never reads them.
