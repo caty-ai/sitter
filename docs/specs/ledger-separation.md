@@ -117,9 +117,21 @@ the expect family landing in the old file after the copy was taken: that
 ask (or that `ack`) is then in a file nothing sweeps, and it loses its
 deadman protection with no signal. So the placement has to quiesce **every
 writer of the family**, not just the scheduler. The kill file is not enough:
-`expect`, `ask`, `watch` and `sweep` honour it, but **`ack` does not** (it
-always appends), and ad-hoc or dashboard-driven invocations do not go
-through the scheduler at all.
+`watch` and `sweep` return without touching the ledger when it is present,
+`expect` and `ask` still append a `refused` row (which carries an
+`expect_id`, so the copy and the checks below do see it), and **`ack`
+ignores it entirely** (it always appends); ad-hoc or dashboard-driven
+invocations do not go through the scheduler at all.
+
+The success condition of the whole procedure is a single, checkable
+invariant, taken under the ledger lock: **the new ledger is byte-for-byte
+the expect-family projection of the old one** (`grep '"expect_id"' old |
+cmp - new`). Every step below either establishes that invariant or
+re-checks it; counts are only a convenience on top of it. A copy that
+failed, stopped short, ended in a torn row, or was overtaken by a late
+writer all show up as a `cmp` mismatch, and the remedy is always the same:
+regenerate the copy (nothing writes to the new ledger until the restart in
+step 4, so regenerating is safe and idempotent).
 
 1. Stop everything that can invoke `expect` / `ack` / `ask` / `watch` /
    `sweep` against `old.jsonl`: unload the scheduled sweep and watch jobs,
@@ -144,39 +156,56 @@ through the scheduler at all.
    long as one full pass takes on that ledger (the scheduled sweep's wall
    time in its log, or `time watch --once` on a private *copy* of the file
    under a private `$SITTER_HOME` — a kill file would make either verb
-   return before staging, so it cannot be used to time a pass). Only then
-   record `n=$(grep -c '"expect_id"' old.jsonl)`.
-2. `( umask 077; flock old.jsonl.lock grep '"expect_id"' old.jsonl > new.jsonl )`
-   (`lockf -k old.jsonl.lock grep …` on macOS) — **copy, never move or edit
-   in place**; holding `<ledger>.lock` for the copy means no sitter append
-   can interleave with it, so the copy cannot end in a torn row; the
-   subshell's `umask 077` gives the new file mode 0600 now rather than at
-   sitter's next touch. This carries every
-   expect-family row sitter itself writes (v0 rows have `"schema":"sitter.v0"`
-   + `expect_id`; v1 `ask_*` / `refused` rows are emitted by the same
-   template and always carry `expect_id`) in original order, which is all
-   the replay needs: active generations, acknowledgements and quarantine
-   tombstones replay identically from the copy. The one replayable row the
-   marker cannot see is a *foreign* line carrying `"schema":"sitter.v1"`
-   without an `expect_id` — the A3 hazard; sitter never writes one, and it
-   is a poison line wherever it sits, so it is not something to carry over.
-3. Point every expect-family invocation at `new.jsonl`, then check
-   `grep -c '"expect_id"' old.jsonl` is still `n`. If it grew, a writer was
-   not stopped or not drained: append the missing rows
-   (`grep '"expect_id"' old.jsonl | tail -n +$((n+1)) >> new.jsonl` — if a
-   row landed between recording `n` and the copy it is appended twice,
-   which is harmless: replaying an identical row again changes no state),
-   **re-record `n`** from the old file, find that writer, and run
-   `sweep --once` on `new.jsonl` once: those rows were unprotected from the
-   moment they landed until now, and any SLA that elapsed meanwhile should
-   fire immediately rather than on the next scheduled pass.
-4. Immediately before restarting the jobs and the ask pipeline, check
-   `grep -c '"expect_id"' old.jsonl` once more (it must still be `n`); then
-   restart. Write `n` beside the old ledger — `printf '%s\n' "$n" >
-   old.jsonl.expect-count` — it is the value Contract B's pre-rotation
-   check reads, possibly months later and by a different tool; an `n`
-   that exists only in someone's memory gets reconstructed from the file's
-   current count, which turns the check into a tautology.
+   return before staging, so it cannot be used to time a pass).
+2. **Copy under the ledger lock, then prove the copy.** Use the lock
+   primitive sitter uses on this host — `flock` where it exists, otherwise
+   `lockf -k` (macOS has no `flock`), otherwise the `mkdir <lock>.d` tier —
+   and put the redirection *inside* the locked command so that a missing
+   or failing primitive creates nothing:
+
+   ```sh
+   old=/path/to/runs.jsonl; new=/path/to/asks.jsonl
+   with_lock() {  # same tiers as sitter's with_ledger_lock; usage: with_lock <lock> <cmd...>
+     l=$1; shift
+     if command -v flock >/dev/null 2>&1; then flock "$l" "$@"
+     elif command -v lockf >/dev/null 2>&1; then lockf -k "$l" "$@"
+     else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d"; return $rc; fi
+   }
+   ( umask 077; with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" > "$2"' sh "$old" "$new" ) || exit 1
+   with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" | cmp - "$2"' sh "$old" "$new" || exit 1
+   n=$(grep -c '"expect_id"' "$new"); [ "$n" -gt 0 ] || exit 1   # 0 only if the old file never held asks
+   ```
+
+   The first line **copies, never moves or edits in place**; holding
+   `<ledger>.lock` means no sitter append can interleave with the copy, so
+   it cannot end in a torn row, and `umask 077` gives the new file mode
+   0600 now rather than at sitter's next touch. The second line is the
+   invariant: the projection and the copy are byte-identical *under the
+   same lock*, so a copy that failed or stopped short, and a row that
+   landed after the copy, both fail here. On a mismatch, find the writer,
+   then rerun both lines — the copy is regenerated from scratch. The
+   projection carries every expect-family row sitter itself writes (v0 rows
+   have `"schema":"sitter.v0"` + `expect_id`; v1 `ask_*` / `refused` rows
+   are emitted by the same template and always carry `expect_id`) in
+   original order, which is all the replay needs: active generations,
+   acknowledgements and quarantine tombstones replay identically from the
+   copy. The one replayable row the marker cannot see is a *foreign* line
+   carrying `"schema":"sitter.v1"` without an `expect_id` — the A3 hazard;
+   sitter never writes one, and it is a poison line wherever it sits, so
+   it is not something to carry over.
+3. Point every expect-family invocation at `new.jsonl` (wrappers, plists,
+   dashboard configuration), and record `n` beside the old ledger:
+   `printf '%s\n' "$n" > "$old.expect-count"`. That file is what Contract
+   B's pre-rotation check reads, possibly months later and by a different
+   tool; it must never be re-derived from the old file's current contents,
+   which would turn the check into a tautology.
+4. Immediately before restarting the jobs and the ask pipeline, run the
+   `cmp` line of step 2 once more. It still holds because nothing has
+   written to either file since step 2 — if it does not, a writer is still
+   alive: find it and go back to step 2 (regenerate; the new ledger has
+   received nothing yet, so this is safe). Then restart, and run
+   `sweep --once` on `new.jsonl` once: any ask whose SLA elapsed during the
+   placement fires now rather than on the next scheduled pass.
 
 The old rows stay in the old file and are inert once nothing sweeps it. Do
 not truncate or rewrite the old file: it is still the run ledger, and it
@@ -228,10 +257,19 @@ family is.) Before every rotation the owner checks, in this order:
    this count under `<ledger>.lock` and keep the lock through the rename**
    (B2): a count taken outside the lock leaves a window between the check
    and the `mv` in which a writer that check 1 missed could still land an
-   ask in what becomes the archive. A larger count means something still
-   writes asks here — release the lock, stop and find it; do not rotate.
-   After a rotation, remove or zero the count file: the fresh file starts
-   at `0`. (The count sees every row sitter
+   ask in what becomes the archive. Never re-derive the expected value
+   from the file's current contents (a missing count file on a file that
+   once held asks means the record was lost — restore it from the A4
+   record, do not recreate it from the count). A larger count means
+   something still writes asks here — release the lock, stop and find it;
+   do not rotate. The excess rows are stranded asks that have had no
+   deadman since they landed: **rescue them before anything else** — under
+   the lock, append the projection's rows after the first `n` to the ask
+   ledger (`grep '"expect_id"' <ledger> | tail -n +$((n+1)) >> asks.jsonl`),
+   run `sweep --once` on the ask ledger once, and write the new count to
+   `<ledger>.expect-count`; only then fix the writer and rotate. After a
+   rotation, remove the count file: the fresh file starts at `0`. (The
+   count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
    `expect_id` — the A3 hazard — which is a reason to keep foreign writers
    off expect ledgers, not a reason to rotate.)
@@ -258,9 +296,12 @@ flock "$ledger.lock" sh -c '
   expected=$(cat "$1.expect-count" 2>/dev/null || echo 0)
   actual=$(grep -c "\"expect_id\"" "$1" || true)
   [ "$actual" = "$expected" ] || { echo "asks still land in $1 ($actual > $expected)" >&2; exit 1; }
-  mv "$1" "$1.$2" && rm -f "$1.expect-count"
+  mv -n "$1" "$1.$2" && rm -f "$1.expect-count"
 ' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
+
+(`mv -n` refuses to overwrite an archive from the same second; use the
+`with_lock` helper from A4 step 2 where `flock` is absent.)
 
 The primitive is `flock` where available, otherwise `lockf -k` (macOS); on a
 host with neither, sitter uses the `mkdir <ledger>.lock.d` tier — take it
