@@ -30,17 +30,18 @@ What the maintainer's production ledger actually contains (measured
 2026-09-08, `~/.claude/state/mission-control/runs.jsonl`, the file that a
 launchd job hands to `sweep --once` every 300 s):
 
-| fact | first snapshot | re-measured later that day (disjoint buckets) |
-| --- | ---: | ---: |
-| rows / bytes | 13,884 / 8.0 MB | 14,170 / 8.15 MB |
-| rows carrying `"expect_id"` (the expect family: `expect` / `ack` / `nudge` / `awaiting_human`) | **6** | **6** |
-| `"schema":"sitter.v0"` rows without `expect_id` (`run` family: `start` / `heartbeat` / `end`) | 8,671 | 8,857 |
-| `"schema":"sitter.v1"` rows | — | 0 |
-| rows with no sitter schema at all (mission-control `mc-log`, appended without the ledger lock) | 5,213 | 5,307 |
+| fact | value (disjoint buckets) |
+| --- | ---: |
+| rows / bytes | 14,170 / 8.15 MB |
+| rows carrying `"expect_id"` (the expect family: `expect` / `ack` / `nudge` / `awaiting_human`) | **6** |
+| `"schema":"sitter.v0"` rows without `expect_id` (`run` family: `start` / `heartbeat` / `end`) | 8,857 |
+| `"schema":"sitter.v1"` rows | 0 |
+| rows with no sitter schema at all (mission-control `mc-log`, appended without the ledger lock) | 5,307 |
 
-The second column's buckets sum exactly (6 + 8,857 + 5,307 = 14,170); the
-first snapshot's component counts over-count by the six expect rows, which
-is why they do not sum to 13,884. The bench (§5) keeps the first snapshot's
+The buckets sum exactly (6 + 8,857 + 0 + 5,307 = 14,170). An earlier
+snapshot the same day, taken for the issue and the bench, counted 13,884
+rows with the same six expect rows (its component counts, 8,671 and 5,213,
+over-counted by six and are not repeated here); the bench (§5) keeps that
 13,884-row total and the same ≈ 5:3 run:foreign mix. So more than 99.9 % of
 the bytes that every sweep copies to its private stage and
 pushes through the replay loop belong to rows the replay filter discards on
@@ -123,19 +124,28 @@ through the scheduler at all.
 1. Stop everything that can invoke `expect` / `ack` / `ask` / `watch` /
    `sweep` against `old.jsonl`: unload the scheduled sweep and watch jobs,
    stop the ask pipeline (the wrapper scripts, the dashboard or agent that
-   calls them), and tell anyone who runs the verbs by hand. Then **drain**:
-   an invocation that started just before you stopped its caller is still
-   running — `expect` and `ask` replay the whole ledger *before* they
-   append (about 2 s on the production shape, longer under load), so its
-   row can land after any check you take now. Wait until nothing has the
-   file or its lock open and no verb is running (`lsof -- old.jsonl
-   old.jsonl.lock` empty; `pgrep -f 'sitter (expect|ack|ask|watch|sweep)'`
-   empty), or at least as long as one full pass takes on that ledger (the
-   scheduled sweep's wall time in its log, or `time watch --once` on a
-   private *copy* of the file under a private `$SITTER_HOME` — a kill file
-   would make either verb return before staging, so it cannot be used to
-   time a pass). Only then record
-   `n=$(grep -c '"expect_id"' old.jsonl)`.
+   calls them), and tell anyone who runs the verbs by hand. Then **drain**.
+   The condition that matters is *every caller has stopped and has no job
+   in flight*: a wrapper that was launched before you stopped its caller
+   may not have reached its `sitter` call yet, and a verb that has reached
+   it replays the whole ledger *before* it appends (`expect` / `ask`: about
+   1–2 s on the production shape, longer under load), so its row can land
+   after any check you take now. The authoritative evidence is the callers'
+   own state — the scheduler shows the jobs unloaded, the ask pipeline's
+   supervisor reports nothing in flight (for `sitter-run`-style launchers,
+   no `run` without its `end` row in the run ledger), nobody is mid-command.
+   Process probes are necessary but not sufficient, and both must be empty
+   together: `lsof -- old.jsonl old.jsonl.lock` **and**
+   `pgrep -f 'sitter[- ](expect|ack|ask|watch|sweep)'` (the hyphen
+   alternative catches wrappers named `sitter-ask` / `sitter-ask-watch`;
+   add your own wrapper and job names to the pattern — a wrapper that has
+   not called sitter yet holds no file descriptor and does not match the
+   bare verb). If you cannot get the callers' state, also wait at least as
+   long as one full pass takes on that ledger (the scheduled sweep's wall
+   time in its log, or `time watch --once` on a private *copy* of the file
+   under a private `$SITTER_HOME` — a kill file would make either verb
+   return before staging, so it cannot be used to time a pass). Only then
+   record `n=$(grep -c '"expect_id"' old.jsonl)`.
 2. `( umask 077; grep '"expect_id"' old.jsonl > new.jsonl )` — **copy,
    never move or edit in place**; the subshell's `umask 077` gives the new
    file mode 0600 now rather than at sitter's next touch. This carries every
@@ -207,8 +217,8 @@ family is.) Before every rotation the owner checks, in this order:
    launchd plists and the `sitter-ask*` scripts), and no operator or agent
    invokes a verb against it by hand.
 2. `grep -c '"expect_id"' <ledger>` equals the value recorded at placement
-   (A4's `n`, as last re-recorded there), or `0` for a file created after
-   the first rotation. A larger count means something still writes asks
+   (A4's `n`, as last re-recorded there), or `0` for a file that never held
+   asks or was created after a rotation. A larger count means something still writes asks
    here — stop and find it; do not rotate. (The count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
    `expect_id` — the A3 hazard — which is a reason to keep foreign writers
@@ -290,6 +300,9 @@ production counts differ slightly), then the same six expect-family rows
 the default fixture ends with (one due, one acked, one quarantined) — and a
 six-row ledger holding only those six rows. Each shape × verb is timed on a fresh
 copy with a private `$SITTER_HOME`, three repetitions, median reported.
+Like the default bench loop, sweep runs with `SITTER_SWEEP_LOCKED=true`, so
+the sweep numbers exclude sweep-lock acquisition; both shapes are timed the
+same way, so the comparison is unaffected.
 
 Results (macOS arm64, Apple Silicon, `sitter` 0.5.5, 2026-09-08,
 `--repeat 3`, wall seconds, median of three; per-run values in the PR body):

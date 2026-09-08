@@ -173,9 +173,10 @@ On the maintainer's production ledger that meant 13,884 rows replayed for
 6 expect-family rows on every 5-minute sweep. With a dedicated ledger the
 cost grows with the ask history alone. The reasoning, the measured numbers,
 and the one-time procedure for moving live asks to a new ledger (stop every
-expect-family writer — the kill file does not stop `ack` — and wait for
-in-flight invocations to finish, since `expect` and `ask` replay the whole
-ledger before they append; copy the `"expect_id"` rows in order under
+expect-family writer — the kill file does not stop `ack` — and wait until
+every caller reports nothing in flight, since a wrapper may not have called
+sitter yet and `expect` / `ask` replay the whole ledger before they append;
+process probes alone are not sufficient; copy the `"expect_id"` rows in order under
 `umask 077`, repoint, verify nothing landed in the old file meanwhile and
 again just before restarting; never move or edit the old file in place)
 are in [docs/specs/ledger-separation.md](specs/ledger-separation.md).
