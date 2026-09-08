@@ -199,8 +199,9 @@ record is restored; after a rotation the record is reset to `0`); a
 larger count than the recorded one means something still writes asks
 there — the excess rows are stranded asks: append the ones not already
 present in the ask ledger (by `event_id`) to it under *that* ledger's lock,
-record the new count only if the append succeeded, and sweep it once
-before anything else — and the
+then record the row count of the snapshot the rows were taken from (never a
+recount of the live file) and only if the append succeeded, and sweep it
+once before anything else — and the
 file must not be rotated. The worked example is in the spec, §3 B2.
 `sitter run` appends each event by reopening the ledger path under
 `<ledger>.lock` and creates the file if it is missing, so the next append

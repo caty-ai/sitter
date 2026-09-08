@@ -172,6 +172,7 @@ step 4, so regenerating is safe and idempotent).
      elif command -v lockf >/dev/null 2>&1; then lockf -k "$l" "$@"
      else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d" 2>/dev/null || true; return $rc; fi  # keep the hold short: sitter evicts a lock dir older than 300 s and then owns it
    }
+   [ ! -L "$new" ] || { echo "$new is a symlink: refusing" >&2; exit 1; }
    [ ! -s "$new" ] || { echo "$new exists and is not empty: refusing to overwrite a ledger" >&2; exit 1; }
    ( umask 077; with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" > "$2" || [ $? -eq 1 ]' sh "$old" "$new" ) || exit 1   # grep rc 1 = no asks, fine; rc 2 = unreadable, abort
    with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" | cmp - "$2"' sh "$old" "$new" || exit 1
@@ -201,7 +202,7 @@ step 4, so regenerating is safe and idempotent).
    it is not something to carry over.
 3. Point every expect-family invocation at `new.jsonl` (wrappers, plists,
    dashboard configuration), and record `n` beside the old ledger:
-   `printf '%s\n' "$n" > "$old.expect-count"`. That file is what Contract
+   `( umask 077; printf '%s\n' "$n" > "$old.expect-count" )`. That file is what Contract
    B's pre-rotation check reads, possibly months later and by a different
    tool; it must never be re-derived from the old file's current contents,
    which would turn the check into a tautology.
@@ -291,25 +292,47 @@ family is.) Before every rotation the owner checks, in this order:
    cannot be re-run twice:
 
    ```sh
-   with_lock "$ledger.lock" sh -c 'grep "\"expect_id\"" "$1" | tail -n +$(($2 + 1)) > "$3"' sh "$ledger" "$n" "$tmp" &&
+   # 1. one locked snapshot of the projection: the excess rows AND the row count of that same snapshot
+   with_lock "$ledger.lock" sh -c '{ grep "\"expect_id\"" "$1" > "$3.snap" || [ $? -eq 1 ]; } &&
+                                   tail -n +$(($2 + 1)) "$3.snap" > "$3" &&
+                                   wc -l < "$3.snap" | tr -d " " > "$3.count"' sh "$ledger" "$n" "$tmp" &&
    { grep -o '"event_id":"[^"]*"' "$asks" | sort -u > "$tmp.known"; } &&
    { grep -v -F -f "$tmp.known" "$tmp" > "$tmp.new" || [ $? -eq 1 ]; } &&   # rows not already in the ask ledger
    with_lock "$asks.lock" sh -c 'cat "$1" >> "$2"' sh "$tmp.new" "$asks" &&
-   grep -c '"expect_id"' "$ledger" > "$ledger.expect-count" ||
+   ( umask 077; cp "$tmp.count" "$ledger.expect-count" ) ||                  # 2. persist the SNAPSHOT count, never a recount
    { echo "rescue failed; count record left untouched so the next attempt still sees the excess" >&2; exit 1; }
    ```
 
-   The chain matters: the count record is written **only after the append
-   succeeded**. A rescue whose append failed (lock busy on the mkdir tier,
-   `ENOSPC`, a read-only ask ledger) must leave the record as it was, or
-   the stranded rows would look accounted for and the next rotation would
-   archive them. Before appending, also compare the `expect_id`s in
+   Two things in the chain matter. The count that is persisted is the
+   **row count of the snapshot the rescued rows were taken from** (`n` +
+   excess), captured under the same lock hold; it is never re-derived from
+   the live file afterwards — the writer that caused the excess is, by
+   construction, still alive during the rescue, and a recount after the
+   append would absorb any row it lands in between, marking that ask
+   accounted for while it sits in a file nothing sweeps. A row that lands
+   during or after the rescue therefore still shows as excess on the next
+   check, and the next check simply repeats the rescue. And the record is
+   written **only after the append succeeded**: a rescue whose append
+   failed (lock busy on the mkdir tier, `ENOSPC`, a read-only ask ledger)
+   must leave the record as it was, or the stranded rows would look
+   accounted for and the next rotation would archive them. Before
+   appending, also compare the `expect_id`s in
    `$tmp.new` with the ids currently active in the ask ledger: a stranded
    row whose id was *reused* on the ask ledger after the copy would, once
    appended after that id's `ack`, reactivate the id and fire a spurious
-   nudge. Such a collision is a compound failure (a missed writer *and* an
-   id reuse); resolve it by hand — register the stranded ask under a fresh
-   id if it is still wanted — rather than appending the row.
+   nudge. Check it before the append (plain `sh`):
+
+   ```sh
+   grep -o '"expect_id":"[^"]*"' "$asks"    | sort -u > "$tmp.ids-asks"
+   grep -o '"expect_id":"[^"]*"' "$tmp.new" | sort -u > "$tmp.ids-new"
+   grep -F -x -f "$tmp.ids-asks" "$tmp.ids-new"     # must print nothing
+   ```
+
+   If it prints an id, that collision is a compound failure (a missed
+   writer *and* an id reuse); remove those rows from `$tmp.new`, append the
+   rest, and handle the removed ones by hand — register the stranded ask
+   under a fresh id with `expect` if it is still wanted, or drop it with
+   the requester's agreement — rather than appending the row.
 
    Then run `sweep --once` on the ask ledger once, at a moment the
    scheduled sweep is not in flight (the sweep lock is non-blocking, so a
@@ -339,11 +362,13 @@ but holding `<ledger>.lock` with the same primitive sitter uses on that host
 rotation a clean boundary: the count and the rename see the same file,
 every row appended before the rename is in the archive, every row after is
 in the fresh file, and a foreign writer that also takes the lock cannot
-straddle it. For example (`lockf -k` in place of `flock` on macOS):
+straddle it. For example, with the `with_lock` helper from A4 step 2 (so
+it runs unchanged on `flock`, `lockf -k` and `mkdir` hosts):
 
 ```sh
 # count and rename under one hold of the ledger lock
-flock "$ledger.lock" sh -c '
+with_lock "$ledger.lock" sh -c '
+  [ -f "$1" ] || { echo "no ledger at $1; nothing to rotate" >&2; exit 1; }
   actual=$(grep -c "\"expect_id\"" "$1" || true)
   if [ -f "$1.expect-count" ]; then expected=$(cat "$1.expect-count")
   elif [ "$actual" -eq 0 ]; then expected=0          # never held asks, or fresh after a rotation
@@ -355,9 +380,8 @@ flock "$ledger.lock" sh -c '
 ```
 
 (The explicit existence test matters: `mv -n` would skip a same-second
-collision *with exit 0*, and the `&&` would then delete the count record
-without rotating anything. Use the `with_lock` helper from A4 step 2 where
-`flock` is absent.)
+collision *with exit 0*, and the `&&` would then reset the count record
+without rotating anything.)
 
 The primitive is `flock` where available, otherwise `lockf -k` (macOS); on a
 host with neither, sitter uses the `mkdir <ledger>.lock.d` tier — take it
