@@ -146,9 +146,12 @@ through the scheduler at all.
    under a private `$SITTER_HOME` — a kill file would make either verb
    return before staging, so it cannot be used to time a pass). Only then
    record `n=$(grep -c '"expect_id"' old.jsonl)`.
-2. `( umask 077; grep '"expect_id"' old.jsonl > new.jsonl )` — **copy,
-   never move or edit in place**; the subshell's `umask 077` gives the new
-   file mode 0600 now rather than at sitter's next touch. This carries every
+2. `( umask 077; flock old.jsonl.lock grep '"expect_id"' old.jsonl > new.jsonl )`
+   (`lockf -k old.jsonl.lock grep …` on macOS) — **copy, never move or edit
+   in place**; holding `<ledger>.lock` for the copy means no sitter append
+   can interleave with it, so the copy cannot end in a torn row; the
+   subshell's `umask 077` gives the new file mode 0600 now rather than at
+   sitter's next touch. This carries every
    expect-family row sitter itself writes (v0 rows have `"schema":"sitter.v0"`
    + `expect_id`; v1 `ask_*` / `refused` rows are emitted by the same
    template and always carry `expect_id`) in original order, which is all
@@ -169,8 +172,11 @@ through the scheduler at all.
    fire immediately rather than on the next scheduled pass.
 4. Immediately before restarting the jobs and the ask pipeline, check
    `grep -c '"expect_id"' old.jsonl` once more (it must still be `n`); then
-   restart. Keep `n` — it is the value Contract B's pre-rotation check
-   compares against.
+   restart. Write `n` beside the old ledger — `printf '%s\n' "$n" >
+   old.jsonl.expect-count` — it is the value Contract B's pre-rotation
+   check reads, possibly months later and by a different tool; an `n`
+   that exists only in someone's memory gets reconstructed from the file's
+   current count, which turns the check into a tautology.
 
 The old rows stay in the old file and are inert once nothing sweeps it. Do
 not truncate or rewrite the old file: it is still the run ledger, and it
@@ -217,9 +223,15 @@ family is.) Before every rotation the owner checks, in this order:
    launchd plists and the `sitter-ask*` scripts), and no operator or agent
    invokes a verb against it by hand.
 2. `grep -c '"expect_id"' <ledger>` equals the value recorded at placement
-   (A4's `n`, as last re-recorded there), or `0` for a file that never held
-   asks or was created after a rotation. A larger count means something still writes asks
-   here — stop and find it; do not rotate. (The count sees every row sitter
+   (A4's `n`, read from `<ledger>.expect-count`), or `0` for a file that
+   never held asks or was created after a rotation (no count file). **Take
+   this count under `<ledger>.lock` and keep the lock through the rename**
+   (B2): a count taken outside the lock leaves a window between the check
+   and the `mv` in which a writer that check 1 missed could still land an
+   ask in what becomes the archive. A larger count means something still
+   writes asks here — release the lock, stop and find it; do not rotate.
+   After a rotation, remove or zero the count file: the fresh file starts
+   at `0`. (The count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
    `expect_id` — the A3 hazard — which is a reason to keep foreign writers
    off expect ledgers, not a reason to rotate.)
@@ -230,17 +242,32 @@ append from any live `sitter run` recreates the path (mode 0600, umask 077).
 Do not truncate, copy-then-truncate, or rewrite the file in place —
 in-place replacement is out of contract for every ledger (v0.5.4).
 
-**B2 — Take the ledger lock for the rename.** Renaming is safe against
-sitter's own appends even without the lock (each row is one `>>` write into
-whichever file the path names at that instant), but holding `<ledger>.lock`
-with the same primitive sitter uses on that host makes the rotation a clean
-boundary: every row appended before the rename is in the archive, every row
-after is in the fresh file, and a foreign writer that also takes the lock
-cannot straddle it. The primitive is `flock` where available, otherwise
-`lockf -k` (macOS); on a host with neither, sitter uses the `mkdir
-<ledger>.lock.d` tier — take it the same way (`mkdir` the directory, rename,
-`rmdir` the directory *you* created; B3's rule protects the one you did not)
-or rename without the lock.
+**B2 — Take the ledger lock for the count and the rename.** Renaming is
+safe against sitter's own appends even without the lock (each row is one
+`>>` write into whichever file the path names at the instant it is opened),
+but holding `<ledger>.lock` with the same primitive sitter uses on that host
+— across B1's count *and* the `mv`, as one critical section — makes the
+rotation a clean boundary: the count and the rename see the same file,
+every row appended before the rename is in the archive, every row after is
+in the fresh file, and a foreign writer that also takes the lock cannot
+straddle it. For example (`lockf -k` in place of `flock` on macOS):
+
+```sh
+# count and rename under one hold of the ledger lock
+flock "$ledger.lock" sh -c '
+  expected=$(cat "$1.expect-count" 2>/dev/null || echo 0)
+  actual=$(grep -c "\"expect_id\"" "$1" || true)
+  [ "$actual" = "$expected" ] || { echo "asks still land in $1 ($actual > $expected)" >&2; exit 1; }
+  mv "$1" "$1.$2" && rm -f "$1.expect-count"
+' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+The primitive is `flock` where available, otherwise `lockf -k` (macOS); on a
+host with neither, sitter uses the `mkdir <ledger>.lock.d` tier — take it
+the same way (`mkdir` the directory, count, rename, `rmdir` it; if the
+`rmdir` fails, leave it alone — sitter has taken it over, and it evicts any
+lock directory older than 300 s, so keep the hold short) or rename without
+the lock.
 
 **B3 — Leave the lock alone.** `<ledger>.lock` is not part of the rotation.
 Do not rename or delete it, and never remove a `<ledger>.lock.d` directory —

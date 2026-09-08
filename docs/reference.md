@@ -177,8 +177,9 @@ expect-family writer — the kill file does not stop `ack` — and wait until
 every caller reports nothing in flight, since a wrapper may not have called
 sitter yet and `expect` / `ask` replay the whole ledger before they append;
 process probes alone are not sufficient; copy the `"expect_id"` rows in order under
-`umask 077`, repoint, verify nothing landed in the old file meanwhile and
-again just before restarting; never move or edit the old file in place)
+`umask 077` and `<ledger>.lock`, repoint, verify nothing landed in the old
+file meanwhile and again just before restarting, record the count beside
+the old ledger; never move or edit the old file in place)
 are in [docs/specs/ledger-separation.md](specs/ledger-separation.md).
 
 A ledger that **no expect-family invocation reads or appends to** — in
@@ -186,10 +187,12 @@ practice the run ledger, which may also hold foreign rows and, after a
 migration, inert copies of old expect rows — may be **rotated by its
 owner**: rotation is *rename + fresh file*. Before rotating, the owner
 checks that no wrapper, scheduler entry, dashboard, operator or agent passes
-the path to `expect` / `ack` / `ask` / `watch` / `sweep`, and that `grep -c
-'"expect_id"'` on the file still equals the count recorded when the asks
-were moved out (or `0` for a file created after a rotation); a larger count
-means something still writes asks there, and the file must not be rotated.
+the path to `expect` / `ack` / `ask` / `watch` / `sweep`, and — under
+`<ledger>.lock`, held through the rename — that `grep -c '"expect_id"'` on
+the file still equals the count recorded beside it when the asks were moved
+out (`<ledger>.expect-count`; `0` for a file that never held asks or was
+created after a rotation); a larger count means something still writes asks
+there, and the file must not be rotated.
 `sitter run` appends each event by reopening the ledger path under
 `<ledger>.lock` and creates the file if it is missing, so the next append
 after a rename lands in a fresh file at the same path; it never reads the
