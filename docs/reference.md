@@ -191,12 +191,15 @@ checks that no wrapper, scheduler entry, dashboard, operator or agent passes
 the path to `expect` / `ack` / `ask` / `watch` / `sweep`, and — under
 `<ledger>.lock`, held through the rename — that `grep -c '"expect_id"'` on
 the file still equals the count recorded beside it when the asks were moved
-out (`<ledger>.expect-count`; `0` for a file that never held asks or was
-created after a rotation; never re-derived from the file's current
-contents); a larger count means something still writes asks there — the
-excess rows are stranded asks: append them to the ask ledger under *that*
-ledger's lock and sweep it once before anything else — and the file must
-not be rotated.
+out (`<ledger>.expect-count`; `0` only for a file that never held asks or
+was created after a rotation; never re-derived from the file's current
+contents, and **a missing record on a file that carries expect rows is an
+unknown state that blocks the rotation** until the record is restored); a
+larger count than the recorded one means something still writes asks
+there — the excess rows are stranded asks: append the ones not already
+present in the ask ledger (by `event_id`) to it under *that* ledger's lock,
+record the new count, and sweep it once before anything else — and the
+file must not be rotated. The worked example is in the spec, §3 B2.
 `sitter run` appends each event by reopening the ledger path under
 `<ledger>.lock` and creates the file if it is missing, so the next append
 after a rename lands in a fresh file at the same path; it never reads the

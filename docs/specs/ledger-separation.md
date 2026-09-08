@@ -117,7 +117,8 @@ the expect family landing in the old file after the copy was taken: that
 ask (or that `ack`) is then in a file nothing sweeps, and it loses its
 deadman protection with no signal. So the placement has to quiesce **every
 writer of the family**, not just the scheduler. The kill file is not enough:
-`watch` and `sweep` return without touching the ledger when it is present,
+`sweep` returns before touching the ledger when it is present and `watch`
+returns before writing any row (it still creates a missing file),
 `expect` and `ask` still append a `refused` row (which carries an
 `expect_id`, so the copy and the checks below do see it), and **`ack`
 ignores it entirely** (it always appends); ad-hoc or dashboard-driven
@@ -172,7 +173,7 @@ step 4, so regenerating is safe and idempotent).
      else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d" 2>/dev/null || true; return $rc; fi  # keep the hold short: sitter evicts a lock dir older than 300 s and then owns it
    }
    [ ! -s "$new" ] || { echo "$new exists and is not empty: refusing to overwrite a ledger" >&2; exit 1; }
-   ( umask 077; with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" > "$2"' sh "$old" "$new" ) || exit 1
+   ( umask 077; with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" > "$2" || [ $? -eq 1 ]' sh "$old" "$new" ) || exit 1   # grep rc 1 = no asks, fine; rc 2 = unreadable, abort
    with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" | cmp - "$2"' sh "$old" "$new" || exit 1
    n=$(grep -c '"expect_id"' "$new" || true); [ "$n" -gt 0 ] || echo "note: $old held no asks; the new ledger starts empty" >&2
    ```
@@ -266,29 +267,41 @@ family is.) Before every rotation the owner checks, in this order:
    this count under `<ledger>.lock` and keep the lock through the rename**
    (B2): a count taken outside the lock leaves a window between the check
    and the `mv` in which a writer that check 1 missed could still land an
-   ask in what becomes the archive. Never re-derive the expected value
-   from the file's current contents (a missing count file on a file that
-   once held asks means the record was lost — restore it from the A4
-   record, do not recreate it from the count). A larger count means
-   something still writes asks here — release the lock, stop and find it;
-   do not rotate. The excess rows are stranded asks that have had no
-   deadman since they landed: **rescue them before anything else**. Take
-   the excess rows from the projection under the run ledger's lock into a
-   private file, then append that file to the ask ledger **under the ask
-   ledger's own lock** (every sitter append to it takes that lock, so the
-   rows land whole and in order; the run ledger's lock says nothing about
-   the ask ledger):
+   ask in what becomes the archive. **A missing count file on a ledger that
+   carries `expect_id` rows means the record was lost, not that the
+   expected value is `0`: the state is *unknown*, and unknown blocks both
+   the rotation and the rescue below until the record is restored from
+   the A4 record.** Never re-derive the expected value from the file's
+   current contents (that turns the check into a tautology), and never
+   treat inert A4 copies as stranded asks (appending them to the ask
+   ledger replays a stale `ack` onto a later ask that reuses the id, and
+   that ask dies silently). `0` is only right for a file that never held
+   asks or was created after a rotation. A larger count than a *verified*
+   `n` means something still writes asks here — release the lock, stop and
+   find it; do not rotate. Those excess rows are stranded asks that have
+   had no deadman since they landed: **rescue them before anything else**.
+   Take the excess rows from the projection under the run ledger's lock
+   into a private file, drop any row whose `event_id` already appears in
+   the ask ledger (that is the discriminator between an A4 copy and a
+   genuinely stranded row — A4 copies are already there, stranded rows are
+   not), append the rest to the ask ledger **under the ask ledger's own
+   lock** (every sitter append to it takes that lock, so the rows land
+   whole and in order; the run ledger's lock says nothing about the ask
+   ledger), and write the new count immediately so an interrupted rescue
+   cannot be re-run twice:
 
    ```sh
    with_lock "$ledger.lock" sh -c 'grep "\"expect_id\"" "$1" | tail -n +$(($2 + 1)) > "$3"' sh "$ledger" "$n" "$tmp"
-   with_lock "$asks.lock"   sh -c 'cat "$1" >> "$2"' sh "$tmp" "$asks"
+   grep -o '"event_id":"[^"]*"' "$asks" | sort -u > "$tmp.known"
+   grep -v -F -f "$tmp.known" "$tmp" > "$tmp.new" || [ $? -eq 1 ]   # rows not already in the ask ledger
+   with_lock "$asks.lock"   sh -c 'cat "$1" >> "$2"' sh "$tmp.new" "$asks"
+   grep -c '"expect_id"' "$ledger" > "$ledger.expect-count"
    ```
 
    Then run `sweep --once` on the ask ledger once, at a moment the
    scheduled sweep is not in flight (the sweep lock is non-blocking, so a
    collision silently does nothing — the next scheduled pass fires it
-   anyway), and write the new count to `<ledger>.expect-count`; only then
-   fix the writer and rotate. After a
+   anyway); only then fix the writer and rotate. After a
    rotation, remove the count file: the fresh file starts at `0`. (The
    count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
@@ -314,9 +327,11 @@ straddle it. For example (`lockf -k` in place of `flock` on macOS):
 ```sh
 # count and rename under one hold of the ledger lock
 flock "$ledger.lock" sh -c '
-  expected=$(cat "$1.expect-count" 2>/dev/null || echo 0)
   actual=$(grep -c "\"expect_id\"" "$1" || true)
-  [ "$actual" = "$expected" ] || { echo "asks still land in $1 ($actual > $expected)" >&2; exit 1; }
+  if [ -f "$1.expect-count" ]; then expected=$(cat "$1.expect-count")
+  elif [ "$actual" -eq 0 ]; then expected=0          # never held asks, or fresh after a rotation
+  else echo "$1 carries $actual expect rows but has no count record: unknown state, not rotating" >&2; exit 1; fi
+  [ "$actual" = "$expected" ] || { echo "expect-row count of $1 differs from the record (actual $actual, recorded $expected); not rotating" >&2; exit 1; }
   [ ! -e "$1.$2" ] || { echo "archive $1.$2 already exists; not rotating" >&2; exit 1; }
   mv "$1" "$1.$2" && rm -f "$1.expect-count"
 ' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
