@@ -291,19 +291,36 @@ family is.) Before every rotation the owner checks, in this order:
    cannot be re-run twice:
 
    ```sh
-   with_lock "$ledger.lock" sh -c 'grep "\"expect_id\"" "$1" | tail -n +$(($2 + 1)) > "$3"' sh "$ledger" "$n" "$tmp"
-   grep -o '"event_id":"[^"]*"' "$asks" | sort -u > "$tmp.known"
-   grep -v -F -f "$tmp.known" "$tmp" > "$tmp.new" || [ $? -eq 1 ]   # rows not already in the ask ledger
-   with_lock "$asks.lock"   sh -c 'cat "$1" >> "$2"' sh "$tmp.new" "$asks"
-   grep -c '"expect_id"' "$ledger" > "$ledger.expect-count"
+   with_lock "$ledger.lock" sh -c 'grep "\"expect_id\"" "$1" | tail -n +$(($2 + 1)) > "$3"' sh "$ledger" "$n" "$tmp" &&
+   { grep -o '"event_id":"[^"]*"' "$asks" | sort -u > "$tmp.known"; } &&
+   { grep -v -F -f "$tmp.known" "$tmp" > "$tmp.new" || [ $? -eq 1 ]; } &&   # rows not already in the ask ledger
+   with_lock "$asks.lock" sh -c 'cat "$1" >> "$2"' sh "$tmp.new" "$asks" &&
+   grep -c '"expect_id"' "$ledger" > "$ledger.expect-count" ||
+   { echo "rescue failed; count record left untouched so the next attempt still sees the excess" >&2; exit 1; }
    ```
+
+   The chain matters: the count record is written **only after the append
+   succeeded**. A rescue whose append failed (lock busy on the mkdir tier,
+   `ENOSPC`, a read-only ask ledger) must leave the record as it was, or
+   the stranded rows would look accounted for and the next rotation would
+   archive them. Before appending, also compare the `expect_id`s in
+   `$tmp.new` with the ids currently active in the ask ledger: a stranded
+   row whose id was *reused* on the ask ledger after the copy would, once
+   appended after that id's `ack`, reactivate the id and fire a spurious
+   nudge. Such a collision is a compound failure (a missed writer *and* an
+   id reuse); resolve it by hand — register the stranded ask under a fresh
+   id if it is still wanted — rather than appending the row.
 
    Then run `sweep --once` on the ask ledger once, at a moment the
    scheduled sweep is not in flight (the sweep lock is non-blocking, so a
    collision silently does nothing — the next scheduled pass fires it
    anyway); only then fix the writer and rotate. After a
-   rotation, remove the count file: the fresh file starts at `0`. (The
-   count sees every row sitter
+   rotation, write `0` to the count file (the B2 example does): the fresh
+   file starts with no asks, and keeping the record present keeps the rule
+   uniform — a *missing* record on a file with expect rows is always
+   "unknown". A file created by a rotation that later acquires expect rows
+   therefore fails check 2 loudly (`actual > 0`), and those rows are
+   stranded asks to rescue as above. (The count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
    `expect_id` — the A3 hazard — which is a reason to keep foreign writers
    off expect ledgers, not a reason to rotate.)
@@ -333,7 +350,7 @@ flock "$ledger.lock" sh -c '
   else echo "$1 carries $actual expect rows but has no count record: unknown state, not rotating" >&2; exit 1; fi
   [ "$actual" = "$expected" ] || { echo "expect-row count of $1 differs from the record (actual $actual, recorded $expected); not rotating" >&2; exit 1; }
   [ ! -e "$1.$2" ] || { echo "archive $1.$2 already exists; not rotating" >&2; exit 1; }
-  mv "$1" "$1.$2" && rm -f "$1.expect-count"
+  mv "$1" "$1.$2" && printf "0\n" > "$1.expect-count"   # fresh file: no asks; keep the record present
 ' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
@@ -389,9 +406,9 @@ on their own:
   `grep -c '"expect_id"'` still equals A4's `n`), not because those rows are
   gone.
 
-Tracking issues: host wiring —
-https://github.com/shojikumaru/alpha-mission-control/issues/52; dashboard
-dual tail + rotation tool — https://github.com/shojikumaru/alpha-mission-control/issues/53.
+Tracking issues for both live in the operator's mission-control repository
+and are linked from this repository's issue #74 (this document does not
+carry links outside the caty-ai organisation).
 
 Acceptance (the #74 Done-when item this lane cannot close by itself): the
 sweep launchd log shows the new ledger path, and `watch --once` acks a test
