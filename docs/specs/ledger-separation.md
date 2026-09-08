@@ -165,18 +165,23 @@ step 4, so regenerating is safe and idempotent).
 
    ```sh
    old=/path/to/runs.jsonl; new=/path/to/asks.jsonl
-   with_lock() {  # same tiers as sitter's with_ledger_lock; usage: with_lock <lock> <cmd...>
+   with_lock() {  # same exclusion as sitter's with_ledger_lock (it spins up to 60 s; this fails fast): with_lock <lock> <cmd...>
      l=$1; shift
      if command -v flock >/dev/null 2>&1; then flock "$l" "$@"
      elif command -v lockf >/dev/null 2>&1; then lockf -k "$l" "$@"
-     else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d"; return $rc; fi
+     else mkdir "$l.d" || return 1; "$@"; rc=$?; rmdir "$l.d" 2>/dev/null || true; return $rc; fi  # keep the hold short: sitter evicts a lock dir older than 300 s and then owns it
    }
+   [ ! -s "$new" ] || { echo "$new exists and is not empty: refusing to overwrite a ledger" >&2; exit 1; }
    ( umask 077; with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" > "$2"' sh "$old" "$new" ) || exit 1
    with_lock "$old.lock" sh -c 'grep "\"expect_id\"" "$1" | cmp - "$2"' sh "$old" "$new" || exit 1
-   n=$(grep -c '"expect_id"' "$new"); [ "$n" -gt 0 ] || exit 1   # 0 only if the old file never held asks
+   n=$(grep -c '"expect_id"' "$new" || true); [ "$n" -gt 0 ] || echo "note: $old held no asks; the new ledger starts empty" >&2
    ```
 
-   The first line **copies, never moves or edits in place**; holding
+   The destination must be new or empty: the copy truncates it, and the
+   `cmp` invariant compares against what was just written, so it cannot
+   notice an active ask that already lived there — the guard on the first
+   line is what protects a re-run of this runbook, or a mistaken target.
+   The copy line **copies, never moves or edits in place**; holding
    `<ledger>.lock` means no sitter append can interleave with the copy, so
    it cannot end in a torn row, and `umask 077` gives the new file mode
    0600 now rather than at sitter's next touch. The second line is the
@@ -203,9 +208,13 @@ step 4, so regenerating is safe and idempotent).
    `cmp` line of step 2 once more. It still holds because nothing has
    written to either file since step 2 — if it does not, a writer is still
    alive: find it and go back to step 2 (regenerate; the new ledger has
-   received nothing yet, so this is safe). Then restart, and run
-   `sweep --once` on `new.jsonl` once: any ask whose SLA elapsed during the
-   placement fires now rather than on the next scheduled pass.
+   received nothing yet, so this is safe — but delete `$new` first, or the
+   non-empty guard refuses). Then, **before** restarting the scheduled
+   jobs, run `sweep --once` on `new.jsonl` once: any ask whose SLA elapsed
+   during the placement fires now rather than on the next scheduled pass.
+   (Order matters: the sweep lock is non-blocking, so a manual sweep that
+   collides with a scheduled one returns 0 having done nothing.) Then
+   restart.
 
 The old rows stay in the old file and are inert once nothing sweeps it. Do
 not truncate or rewrite the old file: it is still the run ledger, and it
@@ -263,11 +272,23 @@ family is.) Before every rotation the owner checks, in this order:
    record, do not recreate it from the count). A larger count means
    something still writes asks here — release the lock, stop and find it;
    do not rotate. The excess rows are stranded asks that have had no
-   deadman since they landed: **rescue them before anything else** — under
-   the lock, append the projection's rows after the first `n` to the ask
-   ledger (`grep '"expect_id"' <ledger> | tail -n +$((n+1)) >> asks.jsonl`),
-   run `sweep --once` on the ask ledger once, and write the new count to
-   `<ledger>.expect-count`; only then fix the writer and rotate. After a
+   deadman since they landed: **rescue them before anything else**. Take
+   the excess rows from the projection under the run ledger's lock into a
+   private file, then append that file to the ask ledger **under the ask
+   ledger's own lock** (every sitter append to it takes that lock, so the
+   rows land whole and in order; the run ledger's lock says nothing about
+   the ask ledger):
+
+   ```sh
+   with_lock "$ledger.lock" sh -c 'grep "\"expect_id\"" "$1" | tail -n +$(($2 + 1)) > "$3"' sh "$ledger" "$n" "$tmp"
+   with_lock "$asks.lock"   sh -c 'cat "$1" >> "$2"' sh "$tmp" "$asks"
+   ```
+
+   Then run `sweep --once` on the ask ledger once, at a moment the
+   scheduled sweep is not in flight (the sweep lock is non-blocking, so a
+   collision silently does nothing — the next scheduled pass fires it
+   anyway), and write the new count to `<ledger>.expect-count`; only then
+   fix the writer and rotate. After a
    rotation, remove the count file: the fresh file starts at `0`. (The
    count sees every row sitter
    writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
@@ -296,12 +317,15 @@ flock "$ledger.lock" sh -c '
   expected=$(cat "$1.expect-count" 2>/dev/null || echo 0)
   actual=$(grep -c "\"expect_id\"" "$1" || true)
   [ "$actual" = "$expected" ] || { echo "asks still land in $1 ($actual > $expected)" >&2; exit 1; }
-  mv -n "$1" "$1.$2" && rm -f "$1.expect-count"
+  [ ! -e "$1.$2" ] || { echo "archive $1.$2 already exists; not rotating" >&2; exit 1; }
+  mv "$1" "$1.$2" && rm -f "$1.expect-count"
 ' sh "$ledger" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-(`mv -n` refuses to overwrite an archive from the same second; use the
-`with_lock` helper from A4 step 2 where `flock` is absent.)
+(The explicit existence test matters: `mv -n` would skip a same-second
+collision *with exit 0*, and the `&&` would then delete the count record
+without rotating anything. Use the `with_lock` helper from A4 step 2 where
+`flock` is absent.)
 
 The primitive is `flock` where available, otherwise `lockf -k` (macOS); on a
 host with neither, sitter uses the `mkdir <ledger>.lock.d` tier — take it
