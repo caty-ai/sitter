@@ -123,20 +123,44 @@ through the scheduler at all.
 1. Stop everything that can invoke `expect` / `ack` / `ask` / `watch` /
    `sweep` against `old.jsonl`: unload the scheduled sweep and watch jobs,
    stop the ask pipeline (the wrapper scripts, the dashboard or agent that
-   calls them). Record `n=$(grep -c '"expect_id"' old.jsonl)`.
+   calls them), and tell anyone who runs the verbs by hand. Then **drain**:
+   an invocation that started just before you stopped its caller is still
+   running — `expect` and `ask` replay the whole ledger *before* they
+   append (about 2 s on the production shape, longer under load), so its
+   row can land after any check you take now. Wait until nothing has the
+   file or its lock open and no verb is running (`lsof -- old.jsonl
+   old.jsonl.lock` empty; `pgrep -f 'sitter (expect|ack|ask|watch|sweep)'`
+   empty), or at least as long as one full pass takes on that ledger (the
+   scheduled sweep's wall time in its log, or `time watch --once` on a
+   private *copy* of the file under a private `$SITTER_HOME` — a kill file
+   would make either verb return before staging, so it cannot be used to
+   time a pass). Only then record
+   `n=$(grep -c '"expect_id"' old.jsonl)`.
 2. `( umask 077; grep '"expect_id"' old.jsonl > new.jsonl )` — **copy,
    never move or edit in place**; the subshell's `umask 077` gives the new
    file mode 0600 now rather than at sitter's next touch. This carries every
-   expect-family row (v0 rows have `"schema":"sitter.v0"` + `expect_id`; v1
-   `ask_*` / `refused` rows also carry `expect_id`) in original order, which
-   is all the replay needs: active generations, acknowledgements and
-   quarantine tombstones replay identically from the copy.
+   expect-family row sitter itself writes (v0 rows have `"schema":"sitter.v0"`
+   + `expect_id`; v1 `ask_*` / `refused` rows are emitted by the same
+   template and always carry `expect_id`) in original order, which is all
+   the replay needs: active generations, acknowledgements and quarantine
+   tombstones replay identically from the copy. The one replayable row the
+   marker cannot see is a *foreign* line carrying `"schema":"sitter.v1"`
+   without an `expect_id` — the A3 hazard; sitter never writes one, and it
+   is a poison line wherever it sits, so it is not something to carry over.
 3. Point every expect-family invocation at `new.jsonl`, then check
    `grep -c '"expect_id"' old.jsonl` is still `n`. If it grew, a writer was
-   not stopped: append the missing rows (`grep '"expect_id"' old.jsonl |
-   tail -n +$((n+1)) >> new.jsonl`) and find that writer before going on.
-4. Only then restart the jobs and the ask pipeline. Keep `n` — it is the
-   value Contract B's pre-rotation check compares against.
+   not stopped or not drained: append the missing rows
+   (`grep '"expect_id"' old.jsonl | tail -n +$((n+1)) >> new.jsonl` — if a
+   row landed between recording `n` and the copy it is appended twice,
+   which is harmless: replaying an identical row again changes no state),
+   **re-record `n`** from the old file, find that writer, and run
+   `sweep --once` on `new.jsonl` once: those rows were unprotected from the
+   moment they landed until now, and any SLA that elapsed meanwhile should
+   fire immediately rather than on the next scheduled pass.
+4. Immediately before restarting the jobs and the ask pipeline, check
+   `grep -c '"expect_id"' old.jsonl` once more (it must still be `n`); then
+   restart. Keep `n` — it is the value Contract B's pre-rotation check
+   compares against.
 
 The old rows stay in the old file and are inert once nothing sweeps it. Do
 not truncate or rewrite the old file: it is still the run ledger, and it
@@ -180,11 +204,15 @@ family is.) Before every rotation the owner checks, in this order:
 
 1. No wrapper script, scheduler entry or dashboard configuration passes this
    path to an expect-family verb (on the maintainer's machine: the two
-   launchd plists and the `sitter-ask*` scripts).
+   launchd plists and the `sitter-ask*` scripts), and no operator or agent
+   invokes a verb against it by hand.
 2. `grep -c '"expect_id"' <ledger>` equals the value recorded at placement
-   (A4's `n`), or `0` for a file created after the first rotation. A larger
-   count means something still writes asks here — stop and find it; do not
-   rotate.
+   (A4's `n`, as last re-recorded there), or `0` for a file created after
+   the first rotation. A larger count means something still writes asks
+   here — stop and find it; do not rotate. (The count sees every row sitter
+   writes; it cannot see a foreign `"schema":"sitter.v1"` line without an
+   `expect_id` — the A3 hazard — which is a reason to keep foreign writers
+   off expect ledgers, not a reason to rotate.)
 
 Then the owner (the supervisor that chose the path — in the maintainer's
 deployment, mission-control) renames the file to an archive name. The next
@@ -201,7 +229,8 @@ after is in the fresh file, and a foreign writer that also takes the lock
 cannot straddle it. The primitive is `flock` where available, otherwise
 `lockf -k` (macOS); on a host with neither, sitter uses the `mkdir
 <ledger>.lock.d` tier — take it the same way (`mkdir` the directory, rename,
-`rmdir` it) or rename without the lock.
+`rmdir` the directory *you* created; B3's rule protects the one you did not)
+or rename without the lock.
 
 **B3 — Leave the lock alone.** `<ledger>.lock` is not part of the rotation.
 Do not rename or delete it, and never remove a `<ledger>.lock.d` directory —

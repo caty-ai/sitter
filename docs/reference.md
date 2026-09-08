@@ -173,17 +173,19 @@ On the maintainer's production ledger that meant 13,884 rows replayed for
 6 expect-family rows on every 5-minute sweep. With a dedicated ledger the
 cost grows with the ask history alone. The reasoning, the measured numbers,
 and the one-time procedure for moving live asks to a new ledger (stop every
-expect-family writer — the kill file does not stop `ack` — copy the
-`"expect_id"` rows in order under `umask 077`, repoint, verify nothing
-landed in the old file meanwhile; never move or edit the old file in place)
+expect-family writer — the kill file does not stop `ack` — and wait for
+in-flight invocations to finish, since `expect` and `ask` replay the whole
+ledger before they append; copy the `"expect_id"` rows in order under
+`umask 077`, repoint, verify nothing landed in the old file meanwhile and
+again just before restarting; never move or edit the old file in place)
 are in [docs/specs/ledger-separation.md](specs/ledger-separation.md).
 
 A ledger that **no expect-family invocation reads or appends to** — in
 practice the run ledger, which may also hold foreign rows and, after a
 migration, inert copies of old expect rows — may be **rotated by its
 owner**: rotation is *rename + fresh file*. Before rotating, the owner
-checks that no wrapper, scheduler entry or dashboard passes the path to
-`expect` / `ack` / `ask` / `watch` / `sweep`, and that `grep -c
+checks that no wrapper, scheduler entry, dashboard, operator or agent passes
+the path to `expect` / `ack` / `ask` / `watch` / `sweep`, and that `grep -c
 '"expect_id"'` on the file still equals the count recorded when the asks
 were moved out (or `0` for a file created after a rotation); a larger count
 means something still writes asks there, and the file must not be rotated.
