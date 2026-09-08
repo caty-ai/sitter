@@ -267,7 +267,8 @@ new_event_id() {
 
 byte_length() {
   local LC_ALL=C
-  printf '%s' "${#1}"
+  local value=${1-}
+  printf '%s' "${#value}"
 }
 
 emit_event() {

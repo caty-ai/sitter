@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Canonical portable integration suite. bash and POSIX tools only; python3 is
 # optional and used solely by assert_json_valid.
-# shellcheck disable=SC2030,SC2031 # Locale cases deliberately isolate changes in subshells.
+# Subshell-isolated locale cases induce cross-function warnings, requiring a file-level disable:
+# ledger_replay_equivalence, ledger_sweep_equivalence, hook_sees_operator_locale,
+# ledger_sweep_exported_locale_equivalence.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 unset SITTER_STALL_AFTER SITTER_TIMEOUT SITTER_RETRIES SITTER_COOLDOWN SITTER_HEARTBEAT_FILE
@@ -2397,7 +2400,7 @@ HOOK
   # shellcheck disable=SC2034 # Read by the loaded emit_event function.
   local WORK_CWD=$CASE_DIR RUN_ID=test LOG_PATH='' STALL_AFTER=0 RETRIES=0 COOLDOWN=0 IDEMPOTENT_BOOL=false
   detect_iconv
-  # shellcheck disable=SC2329 # Called by the loaded emit_event function.
+  # shellcheck disable=SC2317,SC2329 # Called by the loaded emit_event function.
   append_locked() { printf '%s\n' "$1"; }
   emit_event fail failed 1 "$detail" 3 failure >"$CASE_DIR/detail.jsonl"
   grep -Fq '"detail_truncated":true' "$CASE_DIR/detail.jsonl" || {
