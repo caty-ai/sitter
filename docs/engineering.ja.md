@@ -457,6 +457,7 @@ bash / POSIX 環境を提供しないため、WSL（または実験的に Git Ba
 | [docs/adr/0002-expect-single-writer.md](adr/0002-expect-single-writer.md) | 共有ディレクトリ expect 投入: v0 非契約の宣言と、将来の第 2 writer に向けた形式監査 |
 | [docs/specs/prd-v0.2-ask-watch.md](specs/prd-v0.2-ask-watch.md) | 承認済み v0.2 ask/watch 設計（PRD・英語） |
 | [docs/specs/test-spec-v0.2-ask-watch.md](specs/test-spec-v0.2-ask-watch.md) | 凍結済み v0.2 ask/watch テスト仕様（英語） |
+| [docs/specs/ledger-separation.md](specs/ledger-separation.md) | 返事デッドマンに専用台帳を持たせる理由・run 台帳のローテーション契約・その根拠のベンチ（v0.5.5・英語） |
 
 ---
 

@@ -481,6 +481,7 @@ is no config file, by design.
 | [docs/adr/0002-expect-single-writer.md](adr/0002-expect-single-writer.md) | shared-directory expect submission: non-contract in v0, format audit for a future second writer |
 | [docs/specs/prd-v0.2-ask-watch.md](specs/prd-v0.2-ask-watch.md) | the approved v0.2 ask/watch design (PRD) |
 | [docs/specs/test-spec-v0.2-ask-watch.md](specs/test-spec-v0.2-ask-watch.md) | the frozen v0.2 ask/watch test specification |
+| [docs/specs/ledger-separation.md](specs/ledger-separation.md) | why the reply deadman gets its own ledger, the run-ledger rotation contract, and the bench behind it (v0.5.5) |
 
 ---
 
